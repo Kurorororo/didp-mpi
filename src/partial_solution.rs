@@ -21,15 +21,15 @@ pub fn send_partial_solution<C: Communicator>(
     let destination = communicator.process_at_rank(destination_rank);
 
     let n = transition_ids.len();
-    destination.send_with_tag(&n, tags.tag_n);
-    destination.send_with_tag(transition_ids, tags.tag_ids);
-    destination.send_with_tag(forced, tags.tag_forced);
+    destination.buffered_send_with_tag(&n, tags.tag_n);
+    destination.buffered_send_with_tag(transition_ids, tags.tag_ids);
+    destination.buffered_send_with_tag(forced, tags.tag_forced);
 
     if let Some(parent_rank) = parent_rank {
-        destination.send_with_tag(&true, tags.tag_has_parent);
-        destination.send_with_tag(&parent_rank, tags.tag_parent_rank);
+        destination.buffered_send_with_tag(&true, tags.tag_has_parent);
+        destination.buffered_send_with_tag(&parent_rank, tags.tag_parent_rank);
     } else {
-        destination.send_with_tag(&false, tags.tag_has_parent);
+        destination.buffered_send_with_tag(&false, tags.tag_has_parent);
     }
 }
 

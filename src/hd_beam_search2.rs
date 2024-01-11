@@ -7,7 +7,11 @@ use dypdl_heuristic_search::search_algorithm::{
     StateInRegistry, StateRegistry,
 };
 use mpi::traits::*;
-use mpi::{topology::SimpleCommunicator, Rank, Tag};
+use mpi::{
+    datatype::{MutView, UserDatatype, View},
+    topology::SimpleCommunicator,
+    Rank, Tag,
+};
 use std::error::Error;
 use std::fmt::Display;
 use std::marker::PhantomData;
@@ -47,6 +51,7 @@ struct NodeCommunicatorInner<'a, C, M, T> {
     model: &'a Model,
     communicator: &'a C,
     state_serializer: StateSerializer,
+    user_datatype: UserDatatype,
     tmp_buffer: Vec<u8>,
     _phantom: PhantomData<(M, T)>,
 }
@@ -59,12 +64,14 @@ where
 {
     fn new(communicator: &'a C, model: &'a Model) -> Self {
         let state_serializer = StateSerializer::with_model(model);
+        let user_datatype = M::create_data_type(&state_serializer);
         let tmp_buffer = vec![0; M::get_total_size(&state_serializer)];
 
         Self {
             model,
             communicator,
             state_serializer,
+            user_datatype,
             tmp_buffer,
             _phantom: PhantomData,
         }
@@ -73,12 +80,16 @@ where
     fn send(&mut self, destination_rank: Rank, node: M) {
         node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
         let destination = self.communicator.process_at_rank(destination_rank);
-        destination.send_with_tag(&self.tmp_buffer, TAG_NODE);
+        let v = unsafe { View::with_count_and_datatype(&self.tmp_buffer, 1, &self.user_datatype) };
+        destination.buffered_send_with_tag(&v, TAG_NODE);
     }
 
     fn receive(&mut self, source_rank: Rank, primal_bound: Option<T>) -> Option<M> {
         let source = self.communicator.process_at_rank(source_rank);
-        source.receive_into_with_tag(&mut self.tmp_buffer, TAG_NODE);
+        let mut v = unsafe {
+            MutView::with_count_and_datatype(&mut self.tmp_buffer, 1, &self.user_datatype)
+        };
+        source.receive_into_with_tag(&mut v, TAG_NODE);
 
         if let Some(bound) = M::get_bound(self.model, &self.state_serializer, &self.tmp_buffer) {
             if exceed_bound(self.model, bound, primal_bound) {
@@ -397,10 +408,13 @@ where
                         }
                     }
 
-                    while any_process
-                        .immediate_probe_with_tag(TAG_ALL_NODES_SENT)
-                        .is_some()
+                    while let Some(status) =
+                        any_process.immediate_probe_with_tag(TAG_ALL_NODES_SENT)
                     {
+                        let mut buf = 0u8;
+                        communicator
+                            .process_at_rank(status.source_rank())
+                            .receive_into_with_tag::<u8>(&mut buf, TAG_ALL_NODES_SENT);
                         received_all += 1;
                     }
                 }
