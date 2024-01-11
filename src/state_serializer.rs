@@ -1,32 +1,11 @@
+use crate::is_float::IsFloat;
 use dypdl::prelude::*;
-use dypdl::variable_type::{Continuous, Integer, Numeric, OrderedContinuous, Set};
+use dypdl::variable_type::{Continuous, Integer, Numeric, Set};
 use mpi::datatype::DatatypeRef;
 use mpi::traits::Equivalence;
 use mpi::{Address, Count};
 use std::mem::size_of;
 use zerocopy::{AsBytes, FromBytes};
-
-pub trait IsFloat: Numeric {
-    fn is_float() -> bool;
-}
-
-impl IsFloat for Integer {
-    fn is_float() -> bool {
-        false
-    }
-}
-
-impl IsFloat for Continuous {
-    fn is_float() -> bool {
-        true
-    }
-}
-
-impl IsFloat for OrderedContinuous {
-    fn is_float() -> bool {
-        true
-    }
-}
 
 /// Singleton struct for serialization and deserialization of a state and its g-, h-, and f-values.
 #[derive(Debug)]
@@ -41,7 +20,6 @@ pub struct StateSerializer {
     n_integer_resource_variables: usize,
     n_continuous_resource_variables: usize,
     total_size: usize,
-    is_cost_type_float: bool,
 }
 
 impl StateSerializer {
@@ -51,7 +29,7 @@ impl StateSerializer {
         blocks
     }
 
-    pub fn with_model<T: IsFloat>(model: &Model) -> Self {
+    pub fn with_model(model: &Model) -> Self {
         let metadata = &model.state_metadata;
 
         let n_set_variables = metadata.number_of_set_variables();
@@ -75,20 +53,13 @@ impl StateSerializer {
         let n_integer_resource_variables = metadata.number_of_integer_resource_variables();
         let n_continuous_resource_variables = metadata.number_of_continuous_resource_variables();
 
-        let is_float = T::is_float();
-        let mut total_size = n_total_set_variable_blocks * size_of::<u32>()
+        let total_size = n_total_set_variable_blocks * size_of::<u32>()
             + n_element_variables * size_of::<Element>()
             + n_integer_variables * size_of::<Integer>()
             + n_continuous_variables * size_of::<Continuous>()
             + n_element_resource_variables * size_of::<Element>()
             + n_integer_resource_variables * size_of::<Integer>()
             + n_continuous_resource_variables * size_of::<Continuous>();
-
-        if is_float {
-            total_size += 3 * size_of::<Continuous>();
-        } else {
-            total_size += 3 * size_of::<Integer>();
-        }
 
         Self {
             n_total_set_variable_blocks,
@@ -101,11 +72,10 @@ impl StateSerializer {
             n_integer_resource_variables,
             n_continuous_resource_variables,
             total_size,
-            is_cost_type_float: is_float,
         }
     }
 
-    pub fn with_state<S: StateInterface, T: IsFloat>(state: &S) -> Self {
+    pub fn with_state<S: StateInterface>(state: &S) -> Self {
         let n_set_variables = state.get_number_of_set_variables();
         let each_set_variable_bits = (0..n_set_variables)
             .map(|i| {
@@ -127,20 +97,13 @@ impl StateSerializer {
         let n_integer_resource_variables = state.get_number_of_integer_resource_variables();
         let n_continuous_resource_variables = state.get_number_of_continuous_resource_variables();
 
-        let is_float = T::is_float();
-        let mut total_size = n_total_set_variable_blocks * size_of::<u32>()
+        let total_size = n_total_set_variable_blocks * size_of::<u32>()
             + n_element_variables * size_of::<Element>()
             + n_integer_variables * size_of::<Integer>()
             + n_continuous_variables * size_of::<Continuous>()
             + n_element_resource_variables * size_of::<Element>()
             + n_integer_resource_variables * size_of::<Integer>()
             + n_continuous_resource_variables * size_of::<Continuous>();
-
-        if is_float {
-            total_size += 3 * size_of::<Continuous>();
-        } else {
-            total_size += 3 * size_of::<Integer>();
-        }
 
         Self {
             n_total_set_variable_blocks,
@@ -153,7 +116,6 @@ impl StateSerializer {
             n_integer_resource_variables,
             n_continuous_resource_variables,
             total_size,
-            is_cost_type_float: is_float,
         }
     }
 
@@ -167,14 +129,7 @@ impl StateSerializer {
     /// # Panics
     ///
     /// Panics if the buffer is not large enough.
-    pub fn serialize_to<S: StateInterface, T: Numeric>(
-        &self,
-        state: &S,
-        g: T,
-        h: T,
-        f: T,
-        buffer: &mut [u8],
-    ) {
+    pub fn serialize_to<S: StateInterface>(&self, state: &S, buffer: &mut [u8]) {
         let mut offset = 0;
 
         for i in 0..state.get_number_of_set_variables() {
@@ -232,42 +187,6 @@ impl StateSerializer {
             buffer[offset..offset + size].copy_from_slice(bytes);
             offset += size;
         }
-
-        if self.is_cost_type_float {
-            let g = g.to_continuous();
-            let bytes = g.as_bytes();
-            let size = bytes.len();
-            buffer[offset..offset + size].copy_from_slice(bytes);
-            offset += size;
-
-            let h = h.to_continuous();
-            let bytes = h.as_bytes();
-            let size = bytes.len();
-            buffer[offset..offset + size].copy_from_slice(bytes);
-            offset += size;
-
-            let f = f.to_continuous();
-            let bytes = f.as_bytes();
-            let size = bytes.len();
-            buffer[offset..offset + size].copy_from_slice(bytes);
-        } else {
-            let g = g.to_integer();
-            let bytes = g.as_bytes();
-            let size = bytes.len();
-            buffer[offset..offset + size].copy_from_slice(bytes);
-            offset += size;
-
-            let h = h.to_integer();
-            let bytes = h.as_bytes();
-            let size = bytes.len();
-            buffer[offset..offset + size].copy_from_slice(bytes);
-            offset += size;
-
-            let f = f.to_integer();
-            let bytes = f.as_bytes();
-            let size = bytes.len();
-            buffer[offset..offset + size].copy_from_slice(bytes);
-        }
     }
 
     /// Deserialize a state and its g-, h-, and f-values from a buffer.
@@ -275,7 +194,7 @@ impl StateSerializer {
     /// # Panics
     ///
     /// Panics if the buffer is not large enough.
-    pub fn deserialize<S: From<State>, T: Numeric>(&self, buffer: &[u8]) -> (S, T, T, T) {
+    pub fn deserialize<S: From<State>>(&self, buffer: &[u8]) -> S {
         let mut offset = 0;
 
         let set_variables = (0..self.n_set_variables)
@@ -345,34 +264,6 @@ impl StateSerializer {
             })
             .collect::<Vec<_>>();
 
-        let (g, h, f) = if self.is_cost_type_float {
-            let size = size_of::<Continuous>();
-            let g = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
-            offset += size;
-
-            let size = size_of::<Continuous>();
-            let h = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
-            offset += size;
-
-            let size = size_of::<Continuous>();
-            let f = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
-
-            (g, h, f)
-        } else {
-            let size = size_of::<Integer>();
-            let g = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
-            offset += size;
-
-            let size = size_of::<Integer>();
-            let h = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
-            offset += size;
-
-            let size = size_of::<Integer>();
-            let f = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
-
-            (g, h, f)
-        };
-
         let state = S::from(State {
             signature_variables: SignatureVariables {
                 set_variables,
@@ -388,22 +279,10 @@ impl StateSerializer {
             },
         });
 
-        (state, g, h, f)
+        state
     }
 
-    pub fn get_f<T: IsFloat>(&self, data: &[u8]) -> T {
-        if T::is_float() {
-            let offset = self.total_size - size_of::<Continuous>();
-            let size = size_of::<Continuous>();
-            T::from(Continuous::read_from(&data[offset..offset + size]).unwrap())
-        } else {
-            let offset = self.total_size - size_of::<Integer>();
-            let size = size_of::<Integer>();
-            T::from(Integer::read_from(&data[offset..offset + size]).unwrap())
-        }
-    }
-
-    pub fn get_datatype_blocklengths(&self) -> [Count; 8] {
+    pub fn get_datatype_blocklengths(&self) -> [Count; 7] {
         [
             self.n_total_set_variable_blocks as Count,
             self.n_element_variables as Count,
@@ -412,12 +291,11 @@ impl StateSerializer {
             self.n_element_resource_variables as Count,
             self.n_integer_resource_variables as Count,
             self.n_continuous_resource_variables as Count,
-            3,
         ]
     }
 
-    pub fn get_datatype_displacement(&self) -> [Address; 8] {
-        let mut displacement = [0; 8];
+    pub fn get_datatype_displacement(&self) -> [Address; 7] {
+        let mut displacement = [0; 7];
         let mut offset = 0;
         displacement[0] = offset as Address;
         offset += self.n_total_set_variable_blocks * size_of::<u32>();
@@ -432,19 +310,11 @@ impl StateSerializer {
         displacement[5] = offset as Address;
         offset += self.n_integer_resource_variables * size_of::<Integer>();
         displacement[6] = offset as Address;
-        offset += self.n_continuous_resource_variables * size_of::<Continuous>();
-        displacement[7] = offset as Address;
 
         displacement
     }
 
-    pub fn get_datatype_types(&self) -> [DatatypeRef<'static>; 8] {
-        let cost_type = if self.is_cost_type_float {
-            Continuous::equivalent_datatype()
-        } else {
-            Integer::equivalent_datatype()
-        };
-
+    pub fn get_datatype_types(&self) -> [DatatypeRef<'static>; 7] {
         [
             u32::equivalent_datatype(),
             Element::equivalent_datatype(),
@@ -453,7 +323,6 @@ impl StateSerializer {
             Element::equivalent_datatype(),
             Integer::equivalent_datatype(),
             Continuous::equivalent_datatype(),
-            cost_type,
         ]
     }
 }
@@ -461,21 +330,6 @@ impl StateSerializer {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_integer_is_float() {
-        assert!(!Integer::is_float());
-    }
-
-    #[test]
-    fn test_continuous_is_float() {
-        assert!(Continuous::is_float());
-    }
-
-    #[test]
-    fn test_ordered_continuous_is_float() {
-        assert!(OrderedContinuous::is_float());
-    }
 
     fn create_model_and_state() -> (Model, State) {
         let mut model = Model::default();
@@ -558,48 +412,16 @@ mod tests {
     }
 
     #[test]
-    fn test_serializer_integer() {
+    fn test_serializer() {
         let (model, state) = create_model_and_state();
 
-        let serializer = StateSerializer::with_state::<State, Integer>(&state);
+        let serializer = StateSerializer::with_state(&state);
         let mut buffer = vec![0u8; serializer.get_total_size()];
-        let g = 2;
-        let h = 3;
-        let f = 5;
-        serializer.serialize_to(&state, g, h, f, &mut buffer);
+        serializer.serialize_to(&state, &mut buffer);
 
-        assert_eq!(serializer.get_f::<Integer>(&buffer), f);
-
-        let serializer = StateSerializer::with_model::<Integer>(&model);
-        let (reconstructed_state, reconstructed_g, reconstructed_h, reconstructed_f) =
-            serializer.deserialize::<State, Integer>(&buffer);
+        let serializer = StateSerializer::with_model(&model);
+        let reconstructed_state = serializer.deserialize::<State>(&buffer);
 
         assert_eq!(reconstructed_state, state);
-        assert_eq!(reconstructed_g, g);
-        assert_eq!(reconstructed_h, h);
-        assert_eq!(reconstructed_f, f);
-    }
-
-    #[test]
-    fn test_serializer_ordered_continuous() {
-        let (model, state) = create_model_and_state();
-
-        let serializer = StateSerializer::with_state::<State, OrderedContinuous>(&state);
-        let mut buffer = vec![0u8; serializer.get_total_size()];
-        let g = OrderedContinuous::from(1.5);
-        let h = OrderedContinuous::from(2.4);
-        let f = OrderedContinuous::from(3.9);
-        serializer.serialize_to(&state, g, h, f, &mut buffer);
-
-        assert_eq!(serializer.get_f::<OrderedContinuous>(&buffer), f);
-
-        let serializer = StateSerializer::with_model::<OrderedContinuous>(&model);
-        let (reconstructed_state, reconstructed_g, reconstructed_h, reconstructed_f) =
-            serializer.deserialize::<State, OrderedContinuous>(&buffer);
-
-        assert_eq!(reconstructed_state, state);
-        assert_eq!(reconstructed_g, g);
-        assert_eq!(reconstructed_h, h);
-        assert_eq!(reconstructed_f, f);
     }
 }

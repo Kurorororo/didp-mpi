@@ -1,11 +1,12 @@
+use dypdl::prelude::*;
 use mpi::{
     datatype::{DatatypeRef, UserDatatype},
     Address, Count,
 };
 
-use crate::state_serializer::StateSerializer;
+use crate::{is_float::IsFloat, state_serializer::StateSerializer};
 
-pub trait NodeDatatype {
+pub trait NodeDatatype<T: IsFloat> {
     fn get_total_size(serializer: &StateSerializer) -> usize;
 
     fn get_datatype_blocklengths(serializer: &StateSerializer) -> Vec<Count>;
@@ -25,4 +26,6 @@ pub trait NodeDatatype {
     fn serialize_to(&self, serializer: &StateSerializer, buffer: &mut [u8]);
 
     fn deserialize(serializer: &StateSerializer, buffer: &[u8]) -> Self;
+
+    fn get_bound(model: &Model, serializer: &StateSerializer, buffer: &[u8]) -> Option<T>;
 }

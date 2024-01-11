@@ -1,6 +1,10 @@
 mod bfs_node_with_distributed_id_chain;
-mod node_data_type;
 mod distributed_f_node;
 mod distributed_f_node_message;
 mod distributed_id_chain;
+mod hd_beam_search2;
+mod is_float;
+mod node_data_type;
+mod partial_solution;
 mod state_serializer;
+mod statistics;

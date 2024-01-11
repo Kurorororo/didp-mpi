@@ -1,4 +1,5 @@
 use crate::distributed_id_chain::GetDistributedTransitionIdChain;
+use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
 use crate::state_serializer::StateSerializer;
 
@@ -11,8 +12,11 @@ use dypdl_heuristic_search::search_algorithm::data_structure::{
 };
 use dypdl_heuristic_search::search_algorithm::{StateInRegistry, TransitionWithId};
 use mpi::datatype::DatatypeRef;
+use mpi::traits::*;
 use mpi::{Address, Count};
+use std::mem::size_of;
 use std::rc::Rc;
+use zerocopy::{AsBytes, FromBytes};
 
 /// Node ordered by the f-value and associated with a transition ids chain
 /// to be sent to another thread via message passing.
@@ -48,16 +52,23 @@ where
     }
 }
 
-impl<T> NodeDatatype for DistributedFNodeMessage<T>
+impl<T> NodeDatatype<T> for DistributedFNodeMessage<T>
 where
-    T: Numeric,
+    T: Numeric + IsFloat,
 {
     fn get_total_size(serializer: &StateSerializer) -> usize {
-        serializer.get_total_size() + DistributedTransitionIdChain::get_total_size()
+        let size = if T::is_float() {
+            size_of::<Continuous>()
+        } else {
+            size_of::<Integer>()
+        };
+
+        serializer.get_total_size() + 3 * size + DistributedTransitionIdChain::get_total_size()
     }
 
     fn get_datatype_blocklengths(serializer: &StateSerializer) -> Vec<Count> {
         let mut blocklengths = Vec::from(serializer.get_datatype_blocklengths());
+        blocklengths.push(3);
         blocklengths.extend(DistributedTransitionIdChain::get_datatype_blocklengths());
 
         blocklengths
@@ -65,7 +76,15 @@ where
 
     fn get_datatype_displacement(serializer: &StateSerializer) -> Vec<Address> {
         let mut displacement = Vec::from(serializer.get_datatype_displacement());
-        let offset = serializer.get_total_size();
+        let mut offset = serializer.get_total_size();
+        displacement.push(offset as Address);
+
+        if T::is_float() {
+            offset += 3 * size_of::<Continuous>();
+        } else {
+            offset += 3 * size_of::<Integer>();
+        };
+
         displacement.extend(
             DistributedTransitionIdChain::get_datatype_displacements()
                 .into_iter()
@@ -77,20 +96,77 @@ where
 
     fn get_datatype_types(serializer: &StateSerializer) -> Vec<DatatypeRef<'static>> {
         let mut types = Vec::from(serializer.get_datatype_types());
+
+        if T::is_float() {
+            types.extend([Continuous::equivalent_datatype(); 3]);
+        } else {
+            types.extend([Integer::equivalent_datatype(); 3]);
+        }
+
         types.extend(DistributedTransitionIdChain::get_datatype_types());
 
         types
     }
 
     fn serialize_to(&self, serializer: &StateSerializer, buffer: &mut [u8]) {
-        let offset = serializer.get_total_size();
-        serializer.serialize_to(&self.state, self.g, self.h, self.f, &mut buffer[..offset]);
+        let mut offset = serializer.get_total_size();
+        serializer.serialize_to(&self.state, &mut buffer[..offset]);
+
+        if T::is_float() {
+            let size = size_of::<Continuous>();
+            buffer[offset..offset + size].copy_from_slice(self.g.to_continuous().as_bytes());
+            offset += size;
+            buffer[offset..offset + size].copy_from_slice(self.h.to_continuous().as_bytes());
+            offset += size;
+            buffer[offset..offset + size].copy_from_slice(self.f.to_continuous().as_bytes());
+            offset += size;
+        } else {
+            let size = size_of::<Integer>();
+            buffer[offset..offset + size].copy_from_slice(self.g.to_integer().as_bytes());
+            offset += size;
+            buffer[offset..offset + size].copy_from_slice(self.h.to_integer().as_bytes());
+            offset += size;
+            buffer[offset..offset + size].copy_from_slice(self.f.to_integer().as_bytes());
+            offset += size;
+        };
+
         self.transition_id_chain.serialize_to(&mut buffer[offset..]);
     }
 
     fn deserialize(serializer: &StateSerializer, buffer: &[u8]) -> Self {
-        let offset = serializer.get_total_size();
-        let (state, g, h, f) = serializer.deserialize(&buffer[..offset]);
+        let mut offset = serializer.get_total_size();
+        let state = serializer.deserialize(&buffer[..offset]);
+
+        let (g, h, f) = if T::is_float() {
+            let size = size_of::<Continuous>();
+            let g = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
+            offset += size;
+
+            let size = size_of::<Continuous>();
+            let h = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
+            offset += size;
+
+            let size = size_of::<Continuous>();
+            let f = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
+            offset += size;
+
+            (g, h, f)
+        } else {
+            let size = size_of::<Integer>();
+            let g = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
+            offset += size;
+
+            let size = size_of::<Integer>();
+            let h = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
+            offset += size;
+
+            let size = size_of::<Integer>();
+            let f = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
+            offset += size;
+
+            (g, h, f)
+        };
+
         let transition_id_chain = DistributedTransitionIdChain::deserialize(&buffer[offset..]);
 
         Self {
@@ -100,6 +176,26 @@ where
             f,
             transition_id_chain,
         }
+    }
+
+    fn get_bound(model: &Model, serializer: &StateSerializer, data: &[u8]) -> Option<T> {
+        let bound = if T::is_float() {
+            let size = size_of::<Continuous>();
+            let offset = serializer.get_total_size() + 2 * size;
+            T::from(Continuous::read_from(&data[offset..offset + size]).unwrap())
+        } else {
+            let size = size_of::<Integer>();
+            let offset = serializer.get_total_size() + 2 * size;
+            T::from(Integer::read_from(&data[offset..offset + size]).unwrap())
+        };
+
+        let bound = if model.reduce_function == ReduceFunction::Min {
+            -bound
+        } else {
+            bound
+        };
+
+        Some(bound)
     }
 }
 
@@ -201,7 +297,152 @@ where
 
 #[cfg(test)]
 mod tests {
+    use dypdl::variable_type::OrderedContinuous;
+
     use super::*;
+
+    fn create_model_and_state() -> (Model, State) {
+        let mut model = Model::default();
+
+        let object_type_1 = model.add_object_type("object1", 4);
+        assert!(object_type_1.is_ok());
+        let object_type_1 = object_type_1.unwrap();
+
+        let object_type_2 = model.add_object_type("object2", 10);
+        assert!(object_type_2.is_ok());
+        let object_type_2 = object_type_2.unwrap();
+
+        let object_type_3 = model.add_object_type("object3", 7);
+        assert!(object_type_3.is_ok());
+        let object_type_3 = object_type_3.unwrap();
+
+        let set1 = Set::with_capacity(4);
+        let v = model.add_set_variable("set1", object_type_1, set1);
+        assert!(v.is_ok());
+
+        let mut set2 = Set::with_capacity(10);
+        set2.set_range(1..3, true);
+        set2.set_range(7..10, true);
+        let v = model.add_set_variable("set2", object_type_2, set2);
+        assert!(v.is_ok());
+
+        let mut set3 = Set::with_capacity(7);
+        set3.set_range(0..7, true);
+        let v = model.add_set_variable("set3", object_type_3, set3);
+        assert!(v.is_ok());
+
+        let v = model.add_element_variable("element1", object_type_2, 5);
+        assert!(v.is_ok());
+
+        let v = model.add_element_variable("element2", object_type_3, 1);
+        assert!(v.is_ok());
+
+        let v = model.add_integer_variable("integer1", 0);
+        assert!(v.is_ok());
+
+        let v = model.add_integer_variable("integer2", Integer::MAX);
+        assert!(v.is_ok());
+
+        let v = model.add_integer_variable("integer3", 10);
+        assert!(v.is_ok());
+
+        let v = model.add_integer_variable("integer4", Integer::MIN);
+        assert!(v.is_ok());
+
+        let v = model.add_continuous_variable("continuous1", Continuous::MIN);
+        assert!(v.is_ok());
+
+        let v = model.add_continuous_variable("continuous2", std::f64::consts::PI);
+        assert!(v.is_ok());
+
+        let v = model.add_continuous_variable("continuous4", Continuous::MAX);
+        assert!(v.is_ok());
+
+        let v = model.add_element_resource_variable("element_resource1", object_type_3, true, 9);
+        assert!(v.is_ok());
+
+        let v = model.add_element_resource_variable("element_resource2", object_type_1, false, 0);
+        assert!(v.is_ok());
+
+        let v = model.add_element_resource_variable("element_resource3", object_type_2, true, 4);
+        assert!(v.is_ok());
+
+        let v = model.add_integer_resource_variable("integer_resource2", false, -50);
+        assert!(v.is_ok());
+
+        let v = model.add_integer_resource_variable("integer_resource3", false, Integer::MIN);
+        assert!(v.is_ok());
+
+        let v = model.add_continuous_resource_variable("continuous_resource1", true, 0.0);
+        assert!(v.is_ok());
+
+        let state = model.target.clone();
+
+        (model, state)
+    }
+
+    #[test]
+    fn test_serialize_integer() {
+        let (model, state) = create_model_and_state();
+        let chain = DistributedTransitionIdChain::default();
+        chain.id.set(Some(0));
+        let successor = chain.generate_successor(0, false);
+        successor.parent_rank.set(Some(1));
+
+        let node = DistributedFNodeMessage {
+            state: StateWithHashableSignatureVariables::from(state),
+            g: 19,
+            h: -23,
+            f: -42,
+            transition_id_chain: successor,
+        };
+
+        let serializer = StateSerializer::with_model(&model);
+
+        let mut buffer =
+            vec![0u8; DistributedFNodeMessage::<Integer>::get_total_size(&serializer,)];
+
+        node.serialize_to(&serializer, &mut buffer);
+        let deserialized = DistributedFNodeMessage::<Integer>::deserialize(&serializer, &buffer);
+
+        assert_eq!(
+            DistributedFNodeMessage::<Integer>::get_bound(&model, &serializer, &buffer),
+            Some(42)
+        );
+        assert_eq!(deserialized, node);
+    }
+
+    #[test]
+    fn test_serialize_continuous() {
+        let (model, state) = create_model_and_state();
+        let chain = DistributedTransitionIdChain::default();
+        chain.id.set(Some(0));
+        let successor = chain.generate_successor(0, false);
+        successor.parent_rank.set(Some(1));
+
+        let node = DistributedFNodeMessage {
+            state: StateWithHashableSignatureVariables::from(state),
+            g: OrderedContinuous::from(1.9),
+            h: OrderedContinuous::from(-2.3),
+            f: OrderedContinuous::from(-4.2),
+            transition_id_chain: successor,
+        };
+
+        let serializer = StateSerializer::with_model(&model);
+
+        let mut buffer =
+            vec![0u8; DistributedFNodeMessage::<OrderedContinuous>::get_total_size(&serializer)];
+
+        node.serialize_to(&serializer, &mut buffer);
+        let deserialized =
+            DistributedFNodeMessage::<OrderedContinuous>::deserialize(&serializer, &buffer);
+
+        assert_eq!(
+            DistributedFNodeMessage::<OrderedContinuous>::get_bound(&model, &serializer, &buffer),
+            Some(OrderedContinuous::from(4.2))
+        );
+        assert_eq!(deserialized, node);
+    }
 
     #[test]
     fn generate_root_message_some_min() {

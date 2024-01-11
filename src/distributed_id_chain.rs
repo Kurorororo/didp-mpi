@@ -1,5 +1,5 @@
 use mpi::traits::*;
-use mpi::{datatype::DatatypeRef, Address, Count};
+use mpi::{datatype::DatatypeRef, Address, Count, Rank};
 use std::cell::Cell;
 use std::mem::size_of;
 use std::rc::Rc;
@@ -15,7 +15,7 @@ pub struct DistributedTransitionIdChainData {
 #[derive(Default, PartialEq, Eq, Clone, Debug)]
 pub struct DistributedTransitionIdChain {
     pub id: Cell<Option<usize>>,
-    pub parent_rank: Option<i32>,
+    pub parent_rank: Cell<Option<Rank>>,
     data: Option<DistributedTransitionIdChainData>,
 }
 
@@ -29,7 +29,7 @@ impl DistributedTransitionIdChain {
 
         DistributedTransitionIdChain {
             id: Cell::new(None),
-            parent_rank: None,
+            parent_rank: Cell::new(None),
             data: Some(data),
         }
     }
@@ -37,22 +37,25 @@ impl DistributedTransitionIdChain {
     pub fn get_transition_ids_in_this_rank(
         &self,
         id_to_chain_node: &[Rc<Self>],
-    ) -> (Vec<(usize, bool)>, Option<i32>) {
-        let mut result = Vec::default();
+    ) -> (Vec<usize>, Vec<bool>, Option<Rank>) {
+        let mut ids = Vec::default();
+        let mut forced = Vec::default();
         let mut chain = self;
 
         while let Some(data) = chain.data.as_ref() {
-            result.push((data.last_transition_id, data.last_forced));
+            ids.push(data.last_transition_id);
+            forced.push(data.last_forced);
             chain = &id_to_chain_node[data.parent_chain_id];
         }
 
-        result.reverse();
+        ids.reverse();
+        forced.reverse();
 
-        (result, chain.parent_rank)
+        (ids, forced, chain.parent_rank.get())
     }
 
     pub fn get_total_size() -> usize {
-        size_of::<i32>() + 2 * size_of::<usize>() + size_of::<u8>()
+        size_of::<Rank>() + 2 * size_of::<usize>() + size_of::<u8>()
     }
 
     pub fn get_datatype_blocklengths() -> [Count; 3] {
@@ -62,14 +65,14 @@ impl DistributedTransitionIdChain {
     pub fn get_datatype_displacements() -> [Address; 3] {
         [
             0 as Address,
-            size_of::<i32>() as Address,
-            (size_of::<i32>() + 2 * size_of::<usize>()) as Address,
+            size_of::<Rank>() as Address,
+            (size_of::<Rank>() + 2 * size_of::<usize>()) as Address,
         ]
     }
 
     pub fn get_datatype_types() -> [DatatypeRef<'static>; 3] {
         [
-            i32::equivalent_datatype(),
+            Rank::equivalent_datatype(),
             usize::equivalent_datatype(),
             u8::equivalent_datatype(),
         ]
@@ -78,7 +81,7 @@ impl DistributedTransitionIdChain {
     pub fn serialize_to(&self, buffer: &mut [u8]) {
         let mut offset = 0;
 
-        let parent_rank = self.parent_rank.unwrap();
+        let parent_rank = self.parent_rank.get().unwrap();
         let data = self.data.as_ref().unwrap();
 
         let bytes = parent_rank.as_bytes();
@@ -105,25 +108,25 @@ impl DistributedTransitionIdChain {
     pub fn deserialize(buffer: &[u8]) -> Self {
         let mut offset = 0;
 
-        let size = size_of::<i32>();
-        let parent_rank = i32::read_from(&buffer[offset..size]).unwrap();
+        let size = size_of::<Rank>();
+        let parent_rank = Rank::read_from(&buffer[offset..offset + size]).unwrap();
         offset += size;
 
         let size = size_of::<usize>();
-        let parent_chain_id = usize::read_from(&buffer[offset..size]).unwrap();
+        let parent_chain_id = usize::read_from(&buffer[offset..offset + size]).unwrap();
         offset += size;
 
         let size = size_of::<usize>();
-        let last_transition_id = usize::read_from(&buffer[offset..size]).unwrap();
+        let last_transition_id = usize::read_from(&buffer[offset..offset + size]).unwrap();
         offset += size;
 
         let size = size_of::<u8>();
-        let last_forced = u8::read_from(&buffer[offset..size]).unwrap();
+        let last_forced = u8::read_from(&buffer[offset..offset + size]).unwrap();
         let last_forced = last_forced == 1u8;
 
         DistributedTransitionIdChain {
             id: Cell::new(None),
-            parent_rank: Some(parent_rank),
+            parent_rank: Cell::new(Some(parent_rank)),
             data: Some(DistributedTransitionIdChainData {
                 parent_chain_id,
                 last_transition_id,
@@ -135,4 +138,69 @@ impl DistributedTransitionIdChain {
 
 pub trait GetDistributedTransitionIdChain {
     fn get_distributed_transition_id_chain(&self) -> &Rc<DistributedTransitionIdChain>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_default() {
+        let chain = DistributedTransitionIdChain::default();
+
+        assert_eq!(chain.id.get(), None);
+        assert_eq!(chain.parent_rank.get(), None);
+        assert_eq!(chain.data, None);
+    }
+
+    #[test]
+    fn test_generate_successor() {
+        let chain = DistributedTransitionIdChain::default();
+        chain.id.set(Some(0));
+        let successor = chain.generate_successor(0, false);
+
+        assert_eq!(successor.id.get(), None);
+        assert_eq!(successor.parent_rank.get(), None);
+        assert_eq!(
+            successor.data,
+            Some(DistributedTransitionIdChainData {
+                parent_chain_id: 0,
+                last_transition_id: 0,
+                last_forced: false,
+            })
+        );
+    }
+
+    #[test]
+    fn test_get_transition_ids_in_this_rank() {
+        let chain = DistributedTransitionIdChain::default();
+        chain.id.set(Some(0));
+        chain.parent_rank.set(Some(1));
+        let successor = Rc::new(chain.generate_successor(0, false));
+        successor.id.set(Some(1));
+        let id_to_chain_node = vec![Rc::new(chain), successor.clone()];
+        let successor = Rc::new(successor.generate_successor(1, true));
+
+        let (transition_ids, forced, parent_rank) =
+            successor.get_transition_ids_in_this_rank(&id_to_chain_node);
+
+        assert_eq!(transition_ids, vec![0, 1]);
+        assert_eq!(forced, vec![false, true]);
+        assert_eq!(parent_rank, Some(1));
+    }
+
+    #[test]
+    fn test_serialize_deserialize() {
+        let chain = DistributedTransitionIdChain::default();
+        chain.id.set(Some(0));
+        let successor = chain.generate_successor(0, false);
+        successor.parent_rank.set(Some(1));
+
+        let mut buffer = vec![0u8; DistributedTransitionIdChain::get_total_size()];
+        successor.serialize_to(&mut buffer);
+
+        let deserialized = DistributedTransitionIdChain::deserialize(&buffer);
+
+        assert_eq!(deserialized, successor);
+    }
 }
