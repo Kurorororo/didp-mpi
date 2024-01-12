@@ -4,14 +4,11 @@ use crate::distributed_id_chain::GetDistributedTransitionIdChain;
 use super::distributed_id_chain::DistributedTransitionIdChain;
 use dypdl::prelude::*;
 use dypdl::variable_type::Numeric;
-use dypdl_heuristic_search::search_algorithm::data_structure::{
-    exceed_bound, HashableSignatureVariables, StateInformation,
-};
+use dypdl_heuristic_search::search_algorithm::data_structure::{exceed_bound, StateInformation};
 use dypdl_heuristic_search::search_algorithm::{StateInRegistry, StateRegistry, TransitionWithId};
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt::Display;
-use std::ops::Deref;
 use std::rc::Rc;
 
 /// Node ordered by the f-value and associated with a transition ids chain.
@@ -123,20 +120,18 @@ where
     }
 
     /// Inserts a successor node into the registry.
-    pub fn insert_successor_node<V, H, F, N, M>(
+    pub fn insert_successor_node<V, H, F>(
         &self,
         transition: &TransitionWithId<V>,
-        registry: &mut StateRegistry<T, Self, N, Rc<HashableSignatureVariables>, M>,
+        registry: &mut StateRegistry<T, Self>,
         h_evaluator: H,
         f_evaluator: F,
         primal_bound: Option<T>,
-    ) -> Option<(N, bool)>
+    ) -> Option<(Rc<Self>, bool)>
     where
         V: TransitionInterface,
         H: FnOnce(&StateInRegistry) -> Option<T>,
         F: FnOnce(T, T, &StateInRegistry) -> T,
-        N: Deref<Target = Self> + From<Self> + Clone,
-        M: Deref<Target = Model> + Clone,
     {
         let (state, g) =
             registry

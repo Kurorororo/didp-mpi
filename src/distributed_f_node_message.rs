@@ -8,12 +8,12 @@ use super::distributed_id_chain::DistributedTransitionIdChain;
 use dypdl::prelude::*;
 use dypdl::variable_type::Numeric;
 use dypdl_heuristic_search::search_algorithm::data_structure::{
-    exceed_bound, StateInformation, StateWithHashableSignatureVariables,
+    exceed_bound, HashableSignatureVariables, StateInformation, StateWithHashableSignatureVariables,
 };
 use dypdl_heuristic_search::search_algorithm::{StateInRegistry, TransitionWithId};
 use mpi::datatype::DatatypeRef;
 use mpi::traits::*;
-use mpi::{Address, Count};
+use mpi::{Address, Count, Rank};
 use std::mem::size_of;
 use std::rc::Rc;
 use zerocopy::{AsBytes, FromBytes};
@@ -98,9 +98,9 @@ where
         let mut types = Vec::from(serializer.get_datatype_types());
 
         if T::is_float() {
-            types.extend([Continuous::equivalent_datatype(); 3]);
+            types.push(Continuous::equivalent_datatype());
         } else {
-            types.extend([Integer::equivalent_datatype(); 3]);
+            types.push(Integer::equivalent_datatype());
         }
 
         types.extend(DistributedTransitionIdChain::get_datatype_types());
@@ -178,6 +178,10 @@ where
         }
     }
 
+    fn get_signature(&self) -> &HashableSignatureVariables {
+        &self.state.signature_variables
+    }
+
     fn get_bound(model: &Model, serializer: &StateSerializer, data: &[u8]) -> Option<T> {
         let bound = if T::is_float() {
             let size = size_of::<Continuous>();
@@ -196,6 +200,10 @@ where
         };
 
         Some(bound)
+    }
+
+    fn set_parent_rank(&self, parent_rank: Rank) {
+        self.transition_id_chain.parent_rank.set(Some(parent_rank));
     }
 }
 
@@ -240,10 +248,10 @@ where
     }
 
     pub fn bound(&self, model: &Model) -> T {
-        if model.reduce_function == ReduceFunction::Min {
-            -self.f
-        } else {
+        if model.reduce_function == ReduceFunction::Max {
             self.f
+        } else {
+            -self.f
         }
     }
 }

@@ -1,6 +1,5 @@
-use crate::is_float::IsFloat;
 use dypdl::prelude::*;
-use dypdl::variable_type::{Continuous, Integer, Numeric, Set};
+use dypdl::variable_type::{Continuous, Integer, Set};
 use mpi::datatype::DatatypeRef;
 use mpi::traits::Equivalence;
 use mpi::{Address, Count};
@@ -264,7 +263,7 @@ impl StateSerializer {
             })
             .collect::<Vec<_>>();
 
-        let state = S::from(State {
+        S::from(State {
             signature_variables: SignatureVariables {
                 set_variables,
                 vector_variables: Vec::default(),
@@ -277,9 +276,7 @@ impl StateSerializer {
                 integer_variables: integer_resource_variables,
                 continuous_variables: continuous_resource_variables,
             },
-        });
-
-        state
+        })
     }
 
     pub fn get_datatype_blocklengths(&self) -> [Count; 7] {

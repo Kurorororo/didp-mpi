@@ -37,7 +37,7 @@ impl DistributedTransitionIdChain {
     pub fn get_transition_ids_in_this_rank(
         &self,
         id_to_chain_node: &[Rc<Self>],
-    ) -> (Vec<usize>, Vec<bool>, Option<Rank>) {
+    ) -> (Vec<usize>, Vec<bool>, Option<(Rank, usize)>) {
         let mut ids = Vec::default();
         let mut forced = Vec::default();
         let mut chain = self;
@@ -45,13 +45,22 @@ impl DistributedTransitionIdChain {
         while let Some(data) = chain.data.as_ref() {
             ids.push(data.last_transition_id);
             forced.push(data.last_forced);
+
+            if chain.parent_rank.get().is_some() {
+                break;
+            }
+
             chain = &id_to_chain_node[data.parent_chain_id];
         }
 
-        ids.reverse();
-        forced.reverse();
-
-        (ids, forced, chain.parent_rank.get())
+        (
+            ids,
+            forced,
+            chain
+                .parent_rank
+                .get()
+                .map(|rank| (rank, chain.data.as_ref().unwrap().parent_chain_id)),
+        )
     }
 
     pub fn get_total_size() -> usize {
@@ -173,20 +182,26 @@ mod tests {
 
     #[test]
     fn test_get_transition_ids_in_this_rank() {
-        let chain = DistributedTransitionIdChain::default();
+        let chain = Rc::new(DistributedTransitionIdChain::default());
         chain.id.set(Some(0));
-        chain.parent_rank.set(Some(1));
-        let successor = Rc::new(chain.generate_successor(0, false));
-        successor.id.set(Some(1));
-        let id_to_chain_node = vec![Rc::new(chain), successor.clone()];
-        let successor = Rc::new(successor.generate_successor(1, true));
 
-        let (transition_ids, forced, parent_rank) =
+        let mut id_to_chain_node = vec![];
+
+        let successor = Rc::new(chain.generate_successor(0, false));
+        successor.parent_rank.set(Some(0));
+        successor.id.set(Some(0));
+        id_to_chain_node.push(successor.clone());
+
+        let successor = Rc::new(successor.generate_successor(1, true));
+        successor.id.set(Some(1));
+        id_to_chain_node.push(successor.clone());
+
+        let (transition_ids, forced, parent) =
             successor.get_transition_ids_in_this_rank(&id_to_chain_node);
 
-        assert_eq!(transition_ids, vec![0, 1]);
-        assert_eq!(forced, vec![false, true]);
-        assert_eq!(parent_rank, Some(1));
+        assert_eq!(transition_ids, vec![1, 0]);
+        assert_eq!(forced, vec![true, false]);
+        assert_eq!(parent, Some((0, 0)));
     }
 
     #[test]

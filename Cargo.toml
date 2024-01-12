@@ -6,8 +6,21 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dypdl = "0.6"
-dypdl-heuristic-search = "0.6"
-didp-yaml = "0.6"
+dypdl = { path = "../didp-rs/dypdl" }
+dypdl-heuristic-search = { path = "../didp-rs/dypdl-heuristic-search" }
+didp-yaml = { path = "../didp-rs/didp-yaml" }
 mpi = "0.7"
 zerocopy = "0.7.32"
+yaml-rust = "0.4"
+linked-hash-map = "0.5"
+rustc-hash = "1.1"
+rand = "0.8"
+rand_pcg = "0.3"
+serde_yaml = "0.9"
+serde = "1.0"
+tikv-jemallocator = "0.5"
+
+
+[profile.release]
+lto = true
+codegen-units = 1

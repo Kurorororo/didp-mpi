@@ -8,13 +8,14 @@ pub struct PartialSolutionTags {
     pub tag_forced: Tag,
     pub tag_has_parent: Tag,
     pub tag_parent_rank: Tag,
+    pub tag_parent_id: Tag,
 }
 
 pub fn send_partial_solution<C: Communicator>(
     communicator: &C,
     transition_ids: &[usize],
     forced: &[bool],
-    parent_rank: Option<Rank>,
+    parent: Option<(Rank, usize)>,
     destination_rank: Rank,
     tags: &PartialSolutionTags,
 ) {
@@ -25,9 +26,10 @@ pub fn send_partial_solution<C: Communicator>(
     destination.buffered_send_with_tag(transition_ids, tags.tag_ids);
     destination.buffered_send_with_tag(forced, tags.tag_forced);
 
-    if let Some(parent_rank) = parent_rank {
+    if let Some((parent_rank, parent_id)) = parent {
         destination.buffered_send_with_tag(&true, tags.tag_has_parent);
         destination.buffered_send_with_tag(&parent_rank, tags.tag_parent_rank);
+        destination.buffered_send_with_tag(&parent_id, tags.tag_parent_id);
     } else {
         destination.buffered_send_with_tag(&false, tags.tag_has_parent);
     }
@@ -39,7 +41,7 @@ pub fn receive_partial_solution<C: Communicator>(
     forced: &mut Vec<bool>,
     source_rank: Rank,
     tags: &PartialSolutionTags,
-) -> Option<Rank> {
+) -> Option<(Rank, usize)> {
     debug_assert_eq!(transition_ids.len(), forced.len());
 
     let source = communicator.process_at_rank(source_rank);
@@ -58,8 +60,10 @@ pub fn receive_partial_solution<C: Communicator>(
 
     if has_parent {
         let mut parent_rank = 0;
+        let mut parent_id = 0;
         source.receive_into_with_tag(&mut parent_rank, tags.tag_parent_rank);
-        Some(parent_rank)
+        source.receive_into_with_tag(&mut parent_id, tags.tag_parent_id);
+        Some((parent_rank, parent_id))
     } else {
         None
     }

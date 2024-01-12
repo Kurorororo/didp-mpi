@@ -1,7 +1,8 @@
 use dypdl::prelude::*;
+use dypdl_heuristic_search::search_algorithm::data_structure::HashableSignatureVariables;
 use mpi::{
     datatype::{DatatypeRef, UserDatatype},
-    Address, Count,
+    Address, Count, Rank,
 };
 
 use crate::{is_float::IsFloat, state_serializer::StateSerializer};
@@ -27,5 +28,9 @@ pub trait NodeDatatype<T: IsFloat> {
 
     fn deserialize(serializer: &StateSerializer, buffer: &[u8]) -> Self;
 
+    fn get_signature(&self) -> &HashableSignatureVariables;
+
     fn get_bound(model: &Model, serializer: &StateSerializer, buffer: &[u8]) -> Option<T>;
+
+    fn set_parent_rank(&self, parent_rank: Rank);
 }
