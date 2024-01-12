@@ -196,27 +196,27 @@ impl<T: IsFloat> LocalLayerMessage<T> {
             self.cost.is_some(),
         ];
 
-        destination.send_with_tag(&buffer[..], tags.tag_flags);
+        destination.buffered_send_with_tag(&buffer[..], tags.tag_flags);
 
         if T::is_float() {
             if let Some(bound) = self.bound {
                 let bound = bound.to_continuous();
-                destination.send_with_tag(&bound, tags.tag_bound);
+                destination.buffered_send_with_tag(&bound, tags.tag_bound);
             }
 
             if let Some(cost) = self.cost {
                 let cost = cost.to_continuous();
-                destination.send_with_tag(&cost, tags.tag_cost);
+                destination.buffered_send_with_tag(&cost, tags.tag_cost);
             }
         } else {
             if let Some(bound) = self.bound {
                 let bound = bound.to_integer();
-                destination.send_with_tag(&bound, tags.tag_bound);
+                destination.buffered_send_with_tag(&bound, tags.tag_bound);
             }
 
             if let Some(cost) = self.cost {
                 let cost = cost.to_integer();
-                destination.send_with_tag(&cost, tags.tag_cost);
+                destination.buffered_send_with_tag(&cost, tags.tag_cost);
             }
         }
     }
@@ -308,7 +308,7 @@ where
         } else {
             communicator
                 .process_at_rank(parent_rank)
-                .send_with_tag(&parent_id, TAG_PARTIAL_SOLUTION_REQUEST);
+                .buffered_send_with_tag(&parent_id, TAG_PARTIAL_SOLUTION_REQUEST);
 
             parent = receive_partial_solution(
                 communicator,
@@ -325,7 +325,7 @@ where
             let buf: [u8; 0] = [];
             communicator
                 .process_at_rank(destination_rank)
-                .send_with_tag(&buf, TAG_PARTIAL_SOLUTION_FINISHED);
+                .buffered_send_with_tag(&buf, TAG_PARTIAL_SOLUTION_FINISHED);
         }
     }
 
@@ -661,7 +661,7 @@ where
                         if destination_rank != this_rank {
                             communicator
                                 .process_at_rank(destination_rank)
-                                .send_with_tag(
+                                .buffered_send_with_tag(
                                     &destination_to_n_sent[destination_rank as usize],
                                     TAG_ALL_NODES_SENT,
                                 );
