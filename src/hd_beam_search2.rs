@@ -8,12 +8,14 @@ use dypdl_heuristic_search::search_algorithm::{
     get_solution_cost_and_suffix, BeamSearchParameters, SearchInput, Solution, StateRegistry,
     TransitionWithId,
 };
-use mpi::traits::*;
+use memoffset::offset_of;
+use mpi::datatype::SystemDatatype;
 use mpi::{
     datatype::{MutView, UserDatatype, View},
     topology::SimpleCommunicator,
     Rank, Tag,
 };
+use mpi::{traits::*, Address};
 use std::fmt::Display;
 use std::marker::PhantomData;
 use std::mem;
@@ -23,35 +25,17 @@ use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
 use crate::distributed_id_chain::{DistributedTransitionIdChain, GetDistributedTransitionIdChain};
 use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
-use crate::partial_solution::{
-    receive_partial_solution, send_partial_solution, PartialSolutionTags,
-};
+use crate::partial_solution::{receive_partial_solution, send_partial_solution};
 use crate::state_serializer::StateSerializer;
 use crate::statistics::Statistics;
-
-struct LocalLayerMessageTags {
-    tag_flags: Tag,
-    tag_bound: Tag,
-    tag_cost: Tag,
-}
 
 const TAG_NODE: Tag = 0;
 const TAG_ALL_NODES_SENT: Tag = 1;
 const TAG_PARTIAL_SOLUTION_REQUEST: Tag = 2;
 const TAG_PARTIAL_SOLUTION_FINISHED: Tag = 3;
-const LOCAL_LAYER_MESSAGE_TAGS: LocalLayerMessageTags = LocalLayerMessageTags {
-    tag_flags: 4,
-    tag_bound: 5,
-    tag_cost: 6,
-};
-const PARTIAL_SOLUTION_TAGS: PartialSolutionTags = PartialSolutionTags {
-    tag_n: 7,
-    tag_ids: 8,
-    tag_forced: 9,
-    tag_has_parent: 10,
-    tag_parent_rank: 11,
-    tag_parent_id: 12,
-};
+const TAG_LOCAL_LAYER_MESSAGE: Tag = 4;
+const TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA: Tag = 5;
+const TAG_PARTIAL_SOLUTION_TRANSITION_IDS: Tag = 6;
 
 struct NodeCommunicatorInner<'a, C, M, T> {
     model: &'a Model,
@@ -172,6 +156,7 @@ where
     }
 }
 
+#[derive(Clone, Debug, Default, PartialEq)]
 struct LocalLayerMessage<T> {
     pruned: bool,
     is_empty: bool,
@@ -180,102 +165,104 @@ struct LocalLayerMessage<T> {
     cost: Option<T>,
 }
 
-impl<T: IsFloat> LocalLayerMessage<T> {
-    fn send<C: Communicator>(
-        &self,
-        communicator: &C,
-        destination_rank: Rank,
-        tags: &LocalLayerMessageTags,
-    ) {
-        let destination = communicator.process_at_rank(destination_rank);
-        let buffer = [
-            self.pruned,
-            self.is_empty,
-            self.time_out,
-            self.bound.is_some(),
-            self.cost.is_some(),
-        ];
+#[derive(Clone, Debug, Default, PartialEq)]
+struct LocalLayerMessageForSend<T>([bool; 5], [T; 2]);
 
-        destination.buffered_send_with_tag(&buffer[..], tags.tag_flags);
+unsafe impl<T> Equivalence for LocalLayerMessageForSend<T>
+where
+    T: Equivalence<Out = SystemDatatype>,
+{
+    type Out = UserDatatype;
 
-        if T::is_float() {
-            if let Some(bound) = self.bound {
-                let bound = bound.to_continuous();
-                destination.buffered_send_with_tag(&bound, tags.tag_bound);
-            }
-
-            if let Some(cost) = self.cost {
-                let cost = cost.to_continuous();
-                destination.buffered_send_with_tag(&cost, tags.tag_cost);
-            }
-        } else {
-            if let Some(bound) = self.bound {
-                let bound = bound.to_integer();
-                destination.buffered_send_with_tag(&bound, tags.tag_bound);
-            }
-
-            if let Some(cost) = self.cost {
-                let cost = cost.to_integer();
-                destination.buffered_send_with_tag(&cost, tags.tag_cost);
-            }
-        }
+    fn equivalent_datatype() -> Self::Out {
+        UserDatatype::structured(
+            &[5, 2],
+            &[
+                offset_of!(LocalLayerMessageForSend<T>, 0) as Address,
+                offset_of!(LocalLayerMessageForSend<T>, 1) as Address,
+            ],
+            &[bool::equivalent_datatype(), T::equivalent_datatype()],
+        )
     }
+}
 
-    fn receive<C: Communicator>(
-        communicator: &C,
-        source_rank: Rank,
-        tags: &LocalLayerMessageTags,
-    ) -> Self {
-        let source = communicator.process_at_rank(source_rank);
-        let mut buffer = [false; 5];
-        source.receive_into_with_tag(&mut buffer[..], tags.tag_flags);
+impl<T, U> From<LocalLayerMessage<T>> for LocalLayerMessageForSend<U>
+where
+    T: Numeric,
+    U: Numeric,
+{
+    fn from(message: LocalLayerMessage<T>) -> Self {
+        let bound = message
+            .bound
+            .map_or_else(|| U::default(), |bound| U::from(bound));
+        let cost = message
+            .cost
+            .map_or_else(|| U::default(), |cost| U::from(cost));
 
-        let pruned = buffer[0];
-        let is_empty = buffer[1];
-        let time_out = buffer[2];
-        let has_bound = buffer[3];
-        let has_cost = buffer[4];
+        Self(
+            [
+                message.pruned,
+                message.is_empty,
+                message.time_out,
+                message.bound.is_some(),
+                message.cost.is_some(),
+            ],
+            [bound, cost],
+        )
+    }
+}
 
-        let (bound, cost) = if T::is_float() {
-            let bound = if has_bound {
-                let mut bound = Continuous::default();
-                source.receive_into_with_tag(&mut bound, tags.tag_bound);
-                Some(T::from(bound))
-            } else {
-                None
-            };
-            let cost = if has_cost {
-                let mut cost = Continuous::default();
-                source.receive_into_with_tag(&mut cost, tags.tag_cost);
-                Some(T::from(cost))
-            } else {
-                None
-            };
-            (bound, cost)
+impl<T, U> From<LocalLayerMessageForSend<T>> for LocalLayerMessage<U>
+where
+    T: Numeric,
+    U: Numeric,
+{
+    fn from(message: LocalLayerMessageForSend<T>) -> Self {
+        let bound = if message.0[3] {
+            Some(U::from(message.1[0]))
         } else {
-            let bound = if has_bound {
-                let mut bound = Integer::default();
-                source.receive_into_with_tag(&mut bound, tags.tag_bound);
-                Some(T::from(bound))
-            } else {
-                None
-            };
-            let cost = if has_cost {
-                let mut cost = Integer::default();
-                source.receive_into_with_tag(&mut cost, tags.tag_cost);
-                Some(T::from(cost))
-            } else {
-                None
-            };
-            (bound, cost)
+            None
+        };
+        let cost = if message.0[4] {
+            Some(U::from(message.1[1]))
+        } else {
+            None
         };
 
         Self {
-            pruned,
-            is_empty,
-            time_out,
+            pruned: message.0[0],
+            is_empty: message.0[1],
+            time_out: message.0[2],
             bound,
             cost,
+        }
+    }
+}
+
+impl<T: IsFloat> LocalLayerMessage<T> {
+    fn send<C: Communicator>(&self, communicator: &C, destination_rank: Rank, tag: Tag) {
+        let destination = communicator.process_at_rank(destination_rank);
+
+        if T::is_float() {
+            let message = LocalLayerMessageForSend::<Continuous>::from(self.clone());
+            destination.buffered_send_with_tag(&message, tag);
+        } else {
+            let message = LocalLayerMessageForSend::<Integer>::from(self.clone());
+            destination.buffered_send_with_tag(&message, tag);
+        }
+    }
+
+    fn receive<C: Communicator>(communicator: &C, source_rank: Rank, tag: Tag) -> Self {
+        let source = communicator.process_at_rank(source_rank);
+
+        if T::is_float() {
+            let mut message = LocalLayerMessageForSend::<Continuous>::default();
+            source.receive_into_with_tag(&mut message, tag);
+            Self::from(message)
+        } else {
+            let mut message = LocalLayerMessageForSend::<Integer>::default();
+            source.receive_into_with_tag(&mut message, tag);
+            Self::from(message)
         }
     }
 }
@@ -294,16 +281,14 @@ where
     V: TransitionInterface + Clone,
 {
     let chain = node.get_distributed_transition_id_chain();
-    let (mut transition_ids, mut forced, mut parent) =
-        chain.get_transition_ids_in_this_rank(id_to_chain_node);
+    let (mut transition_ids, mut parent) = chain.get_transition_ids_in_this_rank(id_to_chain_node);
 
     while let Some((parent_rank, parent_id)) = parent {
         if parent_rank == communicator.rank() {
             let chain = &id_to_chain_node[parent_id];
-            let (tmp_transition_ids, tmp_forced, tmp_parent) =
+            let (tmp_transition_ids, tmp_parent) =
                 chain.get_transition_ids_in_this_rank(id_to_chain_node);
             transition_ids.extend(tmp_transition_ids);
-            forced.extend(tmp_forced);
             parent = tmp_parent;
         } else {
             communicator
@@ -313,9 +298,9 @@ where
             parent = receive_partial_solution(
                 communicator,
                 &mut transition_ids,
-                &mut forced,
                 parent_rank,
-                &PARTIAL_SOLUTION_TAGS,
+                TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA,
+                TAG_PARTIAL_SOLUTION_TRANSITION_IDS,
             );
         }
     }
@@ -332,12 +317,11 @@ where
     let mut solution = transition_ids
         .iter()
         .rev()
-        .zip(forced.iter().rev())
-        .map(|(&id, &forced)| {
-            if forced {
-                forced_transitions[id].clone()
+        .map(|id| {
+            if id.1 {
+                forced_transitions[id.0].clone()
             } else {
-                transitions[id].clone()
+                transitions[id.0].clone()
             }
         })
         .collect::<Vec<_>>();
@@ -365,15 +349,14 @@ fn wait_retrieve_solution<C>(
                 .receive_into_with_tag(&mut chain_id, TAG_PARTIAL_SOLUTION_REQUEST);
 
             let chain = &id_to_chain_node[chain_id];
-            let (transition_ids, forced, parent) =
-                chain.get_transition_ids_in_this_rank(id_to_chain_node);
+            let (transition_ids, parent) = chain.get_transition_ids_in_this_rank(id_to_chain_node);
             send_partial_solution(
                 communicator,
                 &transition_ids,
-                &forced,
                 parent,
                 rank,
-                &PARTIAL_SOLUTION_TAGS,
+                TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA,
+                TAG_PARTIAL_SOLUTION_TRANSITION_IDS,
             )
         }
 
@@ -468,7 +451,7 @@ where
                 bound: layer_dual_bound,
                 cost: None,
             };
-            message.send(communicator, destination_rank, &LOCAL_LAYER_MESSAGE_TAGS);
+            message.send(communicator, destination_rank, TAG_LOCAL_LAYER_MESSAGE);
         }
     }
 
@@ -509,13 +492,13 @@ where
                 if opened < n_ranks - 1 {
                     // Receives the information of the previous layer.
                     while let Some(status) =
-                        any_process.immediate_probe_with_tag(LOCAL_LAYER_MESSAGE_TAGS.tag_flags)
+                        any_process.immediate_probe_with_tag(TAG_LOCAL_LAYER_MESSAGE)
                     {
                         let source_rank = status.source_rank();
                         let information = LocalLayerMessage::<T>::receive(
                             communicator,
                             source_rank,
-                            &LOCAL_LAYER_MESSAGE_TAGS,
+                            TAG_LOCAL_LAYER_MESSAGE,
                         );
                         // Now, we are sure that the sender thread finishes the previous layer.
                         // We can start to send nodes to the thread.
@@ -807,7 +790,7 @@ where
 
         for destination_rank in 0..n_ranks as Rank {
             if destination_rank != this_rank {
-                local_layer_message.send(communicator, destination_rank, &LOCAL_LAYER_MESSAGE_TAGS);
+                local_layer_message.send(communicator, destination_rank, TAG_LOCAL_LAYER_MESSAGE);
             }
         }
 

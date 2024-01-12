@@ -1,4 +1,4 @@
-use crate::distributed_id_chain::GetDistributedTransitionIdChain;
+use crate::distributed_id_chain::{GetDistributedTransitionIdChain, TransitionId};
 use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
 use crate::state_serializer::StateSerializer;
@@ -291,7 +291,7 @@ where
 
         let transition_id_chain = self
             .get_distributed_transition_id_chain()
-            .generate_successor(transition.id, transition.forced);
+            .generate_successor(TransitionId(transition.id, transition.forced));
 
         Some(DistributedFNodeMessage {
             state,
@@ -394,7 +394,7 @@ mod tests {
         let (model, state) = create_model_and_state();
         let chain = DistributedTransitionIdChain::default();
         chain.id.set(Some(0));
-        let successor = chain.generate_successor(0, false);
+        let successor = chain.generate_successor(TransitionId(0, false));
         successor.parent_rank.set(Some(1));
 
         let node = DistributedFNodeMessage {
@@ -425,7 +425,7 @@ mod tests {
         let (model, state) = create_model_and_state();
         let chain = DistributedTransitionIdChain::default();
         chain.id.set(Some(0));
-        let successor = chain.generate_successor(0, false);
+        let successor = chain.generate_successor(TransitionId(0, false));
         successor.parent_rank.set(Some(1));
 
         let node = DistributedFNodeMessage {

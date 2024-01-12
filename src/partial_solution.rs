@@ -1,69 +1,73 @@
+use memoffset::offset_of;
+use mpi::datatype::UserDatatype;
 use mpi::traits::*;
-use mpi::{Rank, Tag};
+use mpi::{Address, Rank, Tag};
+
+use crate::distributed_id_chain::TransitionId;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct PartialSolutionTags {
-    pub tag_n: Tag,
-    pub tag_ids: Tag,
-    pub tag_forced: Tag,
-    pub tag_has_parent: Tag,
-    pub tag_parent_rank: Tag,
-    pub tag_parent_id: Tag,
+struct PartialSolutionFixeLengthData([usize; 2], Rank, bool);
+
+unsafe impl Equivalence for PartialSolutionFixeLengthData {
+    type Out = UserDatatype;
+
+    fn equivalent_datatype() -> Self::Out {
+        UserDatatype::structured(
+            &[2, 1, 1],
+            &[
+                offset_of!(PartialSolutionFixeLengthData, 0) as Address,
+                offset_of!(PartialSolutionFixeLengthData, 1) as Address,
+                offset_of!(PartialSolutionFixeLengthData, 2) as Address,
+            ],
+            &[
+                usize::equivalent_datatype(),
+                Rank::equivalent_datatype(),
+                bool::equivalent_datatype(),
+            ],
+        )
+    }
 }
 
 pub fn send_partial_solution<C: Communicator>(
     communicator: &C,
-    transition_ids: &[usize],
-    forced: &[bool],
+    transition_ids: &[TransitionId],
     parent: Option<(Rank, usize)>,
     destination_rank: Rank,
-    tags: &PartialSolutionTags,
+    tag_fixed_length_data: Tag,
+    tag_transition_ids: Tag,
 ) {
     let destination = communicator.process_at_rank(destination_rank);
 
-    let n = transition_ids.len();
-    destination.buffered_send_with_tag(&n, tags.tag_n);
-    destination.buffered_send_with_tag(transition_ids, tags.tag_ids);
-    destination.buffered_send_with_tag(forced, tags.tag_forced);
+    let fixed_length_data = PartialSolutionFixeLengthData(
+        [transition_ids.len(), parent.map(|(_, id)| id).unwrap_or(0)],
+        parent.map(|(rank, _)| rank).unwrap_or(0),
+        parent.is_some(),
+    );
 
-    if let Some((parent_rank, parent_id)) = parent {
-        destination.buffered_send_with_tag(&true, tags.tag_has_parent);
-        destination.buffered_send_with_tag(&parent_rank, tags.tag_parent_rank);
-        destination.buffered_send_with_tag(&parent_id, tags.tag_parent_id);
-    } else {
-        destination.buffered_send_with_tag(&false, tags.tag_has_parent);
-    }
+    destination.buffered_send_with_tag(&fixed_length_data, tag_fixed_length_data);
+    destination.buffered_send_with_tag(transition_ids, tag_transition_ids);
 }
 
 pub fn receive_partial_solution<C: Communicator>(
     communicator: &C,
-    transition_ids: &mut Vec<usize>,
-    forced: &mut Vec<bool>,
+    transition_ids: &mut Vec<TransitionId>,
     source_rank: Rank,
-    tags: &PartialSolutionTags,
+    tag_fixed_length_data: Tag,
+    tag_transition_ids: Tag,
 ) -> Option<(Rank, usize)> {
-    debug_assert_eq!(transition_ids.len(), forced.len());
-
     let source = communicator.process_at_rank(source_rank);
 
-    let mut n = 0;
-    source.receive_into_with_tag(&mut n, tags.tag_n);
+    let mut fixed_length_data = PartialSolutionFixeLengthData::default();
+    source.receive_into_with_tag(&mut fixed_length_data, tag_fixed_length_data);
+
+    let n = fixed_length_data.0[0];
     let offset = transition_ids.len();
-    transition_ids.resize(offset + n, 0);
-    forced.resize(offset + n, false);
+    transition_ids.resize(offset + n, TransitionId::default());
 
-    source.receive_into_with_tag(&mut transition_ids[offset..], tags.tag_ids);
-    source.receive_into_with_tag(&mut forced[offset..], tags.tag_forced);
+    source.receive_into_with_tag(&mut transition_ids[offset..], tag_transition_ids);
 
-    let mut has_parent = false;
-    source.receive_into_with_tag(&mut has_parent, tags.tag_has_parent);
-
-    if has_parent {
-        let mut parent_rank = 0;
-        let mut parent_id = 0;
-        source.receive_into_with_tag(&mut parent_rank, tags.tag_parent_rank);
-        source.receive_into_with_tag(&mut parent_id, tags.tag_parent_id);
-        Some((parent_rank, parent_id))
+    if fixed_length_data.2 {
+        Some((fixed_length_data.1, fixed_length_data.0[1]))
     } else {
         None
     }
