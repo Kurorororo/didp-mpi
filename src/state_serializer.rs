@@ -291,24 +291,24 @@ impl StateSerializer {
         ]
     }
 
-    pub fn get_datatype_displacement(&self) -> [Address; 7] {
-        let mut displacement = [0; 7];
+    pub fn get_datatype_displacements(&self) -> [Address; 7] {
+        let mut displacements = [0; 7];
         let mut offset = 0;
-        displacement[0] = offset as Address;
+        displacements[0] = offset as Address;
         offset += self.n_total_set_variable_blocks * size_of::<u32>();
-        displacement[1] = offset as Address;
+        displacements[1] = offset as Address;
         offset += self.n_element_variables * size_of::<Element>();
-        displacement[2] = offset as Address;
+        displacements[2] = offset as Address;
         offset += self.n_integer_variables * size_of::<Integer>();
-        displacement[3] = offset as Address;
+        displacements[3] = offset as Address;
         offset += self.n_continuous_variables * size_of::<Continuous>();
-        displacement[4] = offset as Address;
+        displacements[4] = offset as Address;
         offset += self.n_element_resource_variables * size_of::<Element>();
-        displacement[5] = offset as Address;
+        displacements[5] = offset as Address;
         offset += self.n_integer_resource_variables * size_of::<Integer>();
-        displacement[6] = offset as Address;
+        displacements[6] = offset as Address;
 
-        displacement
+        displacements
     }
 
     pub fn get_datatype_types(&self) -> [DatatypeRef<'static>; 7] {

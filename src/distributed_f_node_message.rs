@@ -74,10 +74,10 @@ where
         blocklengths
     }
 
-    fn get_datatype_displacement(serializer: &StateSerializer) -> Vec<Address> {
-        let mut displacement = Vec::from(serializer.get_datatype_displacement());
+    fn get_datatype_displacements(serializer: &StateSerializer) -> Vec<Address> {
+        let mut displacements = Vec::from(serializer.get_datatype_displacements());
         let mut offset = serializer.get_total_size();
-        displacement.push(offset as Address);
+        displacements.push(offset as Address);
 
         if T::is_float() {
             offset += 3 * size_of::<Continuous>();
@@ -85,13 +85,13 @@ where
             offset += 3 * size_of::<Integer>();
         };
 
-        displacement.extend(
+        displacements.extend(
             DistributedTransitionIdChain::get_datatype_displacements()
                 .into_iter()
                 .map(|x| x + offset as Address),
         );
 
-        displacement
+        displacements
     }
 
     fn get_datatype_types(serializer: &StateSerializer) -> Vec<DatatypeRef<'static>> {

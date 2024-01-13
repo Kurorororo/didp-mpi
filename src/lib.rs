@@ -4,12 +4,17 @@ mod distributed_f_node_message;
 mod distributed_id_chain;
 mod hash_functions;
 mod hd_beam_search2;
+mod hdacps;
 mod io;
 mod is_float;
+mod mpi_termination_detector;
+mod node_communicator;
 mod node_data_type;
 mod partial_solution;
 mod state_serializer;
 mod statistics;
+mod hd_anytime_search;
+mod timestamped_communicator;
 
 pub use distributed_f_node::DistributedFNode;
 pub use distributed_f_node_message::DistributedFNodeMessage;

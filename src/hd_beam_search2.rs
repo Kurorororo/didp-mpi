@@ -10,101 +10,42 @@ use dypdl_heuristic_search::search_algorithm::{
 };
 use memoffset::offset_of;
 use mpi::datatype::SystemDatatype;
-use mpi::{
-    datatype::{MutView, UserDatatype, View},
-    topology::SimpleCommunicator,
-    Rank, Tag,
-};
+use mpi::{datatype::UserDatatype, topology::SimpleCommunicator, Rank, Tag};
 use mpi::{traits::*, Address};
 use std::fmt::Display;
-use std::marker::PhantomData;
 use std::mem;
 use std::rc::Rc;
 
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
 use crate::distributed_id_chain::{DistributedTransitionIdChain, GetDistributedTransitionIdChain};
 use crate::is_float::IsFloat;
+use crate::node_communicator::NodeCommunicator;
 use crate::node_data_type::NodeDatatype;
 use crate::partial_solution::{receive_partial_solution, send_partial_solution};
-use crate::state_serializer::StateSerializer;
 use crate::statistics::Statistics;
 
 const TAG_NODE: Tag = 0;
 const TAG_ALL_NODES_SENT: Tag = 1;
-const TAG_PARTIAL_SOLUTION_REQUEST: Tag = 2;
-const TAG_PARTIAL_SOLUTION_FINISHED: Tag = 3;
-const TAG_LOCAL_LAYER_MESSAGE: Tag = 4;
-const TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA: Tag = 5;
-const TAG_PARTIAL_SOLUTION_TRANSITION_IDS: Tag = 6;
+const TAG_LOCAL_LAYER_MESSAGE: Tag = 2;
+const TAG_PARTIAL_SOLUTION_REQUEST: Tag = 3;
+const TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA: Tag = 4;
+const TAG_PARTIAL_SOLUTION_TRANSITION_IDS: Tag = 5;
+const TAG_PARTIAL_SOLUTION_FINISHED: Tag = 6;
 
-struct NodeCommunicatorInner<'a, C, M, T> {
-    model: &'a Model,
-    communicator: &'a C,
-    state_serializer: StateSerializer,
-    user_datatype: UserDatatype,
-    tmp_buffer: Vec<u8>,
-    _phantom: PhantomData<(M, T)>,
-}
-
-impl<'a, C, M, T> NodeCommunicatorInner<'a, C, M, T>
-where
-    C: Communicator,
-    M: NodeDatatype<T>,
-    T: Numeric + IsFloat,
-{
-    fn new(communicator: &'a C, model: &'a Model) -> Self {
-        let state_serializer = StateSerializer::with_model(model);
-        let user_datatype = M::create_data_type(&state_serializer);
-        let tmp_buffer = vec![0; M::get_total_size(&state_serializer)];
-
-        Self {
-            model,
-            communicator,
-            state_serializer,
-            user_datatype,
-            tmp_buffer,
-            _phantom: PhantomData,
-        }
-    }
-
-    fn send(&mut self, destination_rank: Rank, node: M) {
-        node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
-        let destination = self.communicator.process_at_rank(destination_rank);
-        let v = unsafe { View::with_count_and_datatype(&self.tmp_buffer, 1, &self.user_datatype) };
-        destination.buffered_send_with_tag(&v, TAG_NODE);
-    }
-
-    fn receive(&mut self, source_rank: Rank, primal_bound: Option<T>) -> Option<M> {
-        let source = self.communicator.process_at_rank(source_rank);
-        let mut v = unsafe {
-            MutView::with_count_and_datatype(&mut self.tmp_buffer, 1, &self.user_datatype)
-        };
-        source.receive_into_with_tag(&mut v, TAG_NODE);
-
-        if let Some(bound) = M::get_bound(self.model, &self.state_serializer, &self.tmp_buffer) {
-            if exceed_bound(self.model, bound, primal_bound) {
-                return None;
-            }
-        }
-
-        Some(M::deserialize(&self.state_serializer, &self.tmp_buffer))
-    }
-}
-
-struct NodeCommunicator<'a, C, M, T> {
-    communicator: NodeCommunicatorInner<'a, C, M, T>,
+struct BufferedNodeCommunicator<'a, C, M, T> {
+    communicator: NodeCommunicator<'a, C, M, T>,
     buffers: Vec<Vec<M>>,
     channel_open: Vec<bool>,
 }
 
-impl<'a, C, M, T> NodeCommunicator<'a, C, M, T>
+impl<'a, C, M, T> BufferedNodeCommunicator<'a, C, M, T>
 where
     C: Communicator,
     M: NodeDatatype<T>,
     T: IsFloat,
 {
-    fn new(communicator: &'a C, model: &'a Model, capacity: usize) -> Self {
-        let inner = NodeCommunicatorInner::new(communicator, model);
+    fn new(communicator: &'a C, tag: Tag, model: Rc<Model>, capacity: usize) -> Self {
+        let inner = NodeCommunicator::new(communicator, tag, model);
 
         let n_ranks = communicator.size() as usize;
         let capacity = capacity / n_ranks;
@@ -272,8 +213,8 @@ fn retrieve_solution<C, N, V>(
     id_to_chain_node: &[Rc<DistributedTransitionIdChain>],
     node: &N,
     suffix: &[TransitionWithId<V>],
-    forced_transitions: &[TransitionWithId<V>],
-    transitions: &[TransitionWithId<V>],
+    forced_transitions: &[Rc<TransitionWithId<V>>],
+    transitions: &[Rc<TransitionWithId<V>>],
 ) -> Vec<TransitionWithId<V>>
 where
     C: Communicator,
@@ -319,9 +260,9 @@ where
         .rev()
         .map(|id| {
             if id.1 {
-                forced_transitions[id.0].clone()
+                forced_transitions[id.0].as_ref().clone()
             } else {
-                transitions[id.0].clone()
+                transitions[id.0].as_ref().clone()
             }
         })
         .collect::<Vec<_>>();
@@ -373,7 +314,7 @@ fn wait_retrieve_solution<C>(
     }
 }
 
-pub fn hd_beam_search2<'a, T, N, M, E, B, V, F>(
+pub fn hd_beam_search2<'a, T, N, M, E, B, F, V>(
     input: &'a SearchInput<'a, M, TransitionWithId<V>>,
     transition_evaluator: E,
     base_cost_evaluator: B,
@@ -383,8 +324,7 @@ pub fn hd_beam_search2<'a, T, N, M, E, B, V, F>(
 ) -> (Solution<T, TransitionWithId<V>>, Option<Rank>, Statistics)
 where
     T: Numeric + IsFloat + Ord + Display,
-    N: BfsNodeWithDistributedIdChain<T>,
-    N: From<M>,
+    N: BfsNodeWithDistributedIdChain<T> + From<M>,
     M: Clone + NodeDatatype<T>,
     E: Fn(&N, &TransitionWithId<V>, Option<T>) -> Option<M>,
     B: Fn(T, T) -> T,
@@ -456,7 +396,8 @@ where
     }
 
     let mut id_to_chain_node = vec![];
-    let mut node_communicator = NodeCommunicator::<_, M, T>::new(communicator, model, capacity);
+    let mut node_communicator =
+        BufferedNodeCommunicator::<_, M, T>::new(communicator, TAG_NODE, model.clone(), capacity);
     let any_process = communicator.any_process();
     let mut destination_to_n_sent = vec![0; n_ranks as usize];
     let mut source_to_counter = vec![0; n_ranks as usize];
@@ -746,26 +687,13 @@ where
 
                 if goal_rank == this_rank {
                     let (node, cost, suffix) = incumbent.unwrap();
-                    let forced_transitions = input
-                        .generator
-                        .forced_transitions
-                        .iter()
-                        .map(|t| t.as_ref().clone())
-                        .collect::<Vec<_>>();
-                    let transitions = input
-                        .generator
-                        .transitions
-                        .iter()
-                        .map(|t| t.as_ref().clone())
-                        .collect::<Vec<_>>();
-
                     solution.transitions = retrieve_solution(
                         communicator,
                         &id_to_chain_node,
                         node.as_ref(),
                         suffix,
-                        &forced_transitions,
-                        &transitions,
+                        &generator.forced_transitions,
+                        &generator.transitions,
                     );
                     solution.cost = Some(cost);
                 } else {

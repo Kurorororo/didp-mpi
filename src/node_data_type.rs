@@ -12,13 +12,13 @@ pub trait NodeDatatype<T: IsFloat> {
 
     fn get_datatype_blocklengths(serializer: &StateSerializer) -> Vec<Count>;
 
-    fn get_datatype_displacement(serializer: &StateSerializer) -> Vec<Address>;
+    fn get_datatype_displacements(serializer: &StateSerializer) -> Vec<Address>;
 
     fn get_datatype_types(serializer: &StateSerializer) -> Vec<DatatypeRef<'static>>;
 
     fn create_data_type(serializer: &StateSerializer) -> UserDatatype {
         let blocklengths = Self::get_datatype_blocklengths(serializer);
-        let displacements = Self::get_datatype_displacement(serializer);
+        let displacements = Self::get_datatype_displacements(serializer);
         let types = Self::get_datatype_types(serializer);
 
         UserDatatype::structured(&blocklengths, &displacements, &types)
