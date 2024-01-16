@@ -120,7 +120,7 @@ where
         }
     }
 
-    pub fn send(&mut self, destination_rank: Rank, node: &M, depth: usize) {
+    pub fn send(&mut self, destination_rank: Rank, node: &M) {
         node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
         self.communicator
             .send(&mut self.tmp_buffer, destination_rank);

@@ -6,7 +6,6 @@ use dypdl_heuristic_search::search_algorithm::data_structure::{
 };
 use dypdl_heuristic_search::search_algorithm::util::TimeKeeper;
 use dypdl_heuristic_search::search_algorithm::{SearchInput, Solution, TransitionWithId};
-use dypdl_heuristic_search::ProgressiveSearchParameters;
 use mpi::traits::*;
 use mpi::{topology::SimpleCommunicator, Rank, Tag};
 use std::collections::BinaryHeap;
@@ -17,11 +16,11 @@ use std::str::FromStr;
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
 use crate::is_float::IsFloat;
 use crate::mpi_anytime_search::{MpiAnytimeSearch, MpiAnytimeSearchParameters};
-use crate::node_communicator::TimeStampedNodeDepthCommunicator;
+use crate::node_communicator::TimeStampedNodeCommunicator;
 use crate::node_data_type::NodeDatatype;
 use crate::statistics::Statistics;
 
-pub struct HdAcps<'a, T, N, M, E, B, F, V = Transition>
+pub struct HdBestFirstSearch<'a, T, N, M, E, B, F, V = Transition>
 where
     T: Numeric + IsFloat + Ord + Display,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
@@ -30,16 +29,14 @@ where
     model: Rc<Model>,
     search: MpiAnytimeSearch<'a, T, N, M, E, B, F, V>,
     communicator: &'a SimpleCommunicator,
-    node_communicator: TimeStampedNodeDepthCommunicator<'a, SimpleCommunicator, M, T>,
-    progressive_parameters: ProgressiveSearchParameters,
-    width: usize,
-    open: Vec<BinaryHeap<Rc<N>>>,
+    node_communicator: TimeStampedNodeCommunicator<'a, SimpleCommunicator, M, T>,
+    open: BinaryHeap<Rc<N>>,
     time_keeper: TimeKeeper,
     is_checking_termination: bool,
     is_terminated: bool,
 }
 
-impl<'a, T, N, M, E, B, F, V> HdAcps<'a, T, N, M, E, B, F, V>
+impl<'a, T, N, M, E, B, F, V> HdBestFirstSearch<'a, T, N, M, E, B, F, V>
 where
     T: Numeric + IsFloat + Ord + Display,
     <T as FromStr>::Err: Debug,
@@ -64,16 +61,15 @@ where
         transition_evaluator: E,
         base_cost_evaluator: B,
         parameters: MpiAnytimeSearchParameters<T>,
-        progressive_parameters: ProgressiveSearchParameters,
         hash_function: F,
         communicator: &'a SimpleCommunicator,
-    ) -> HdAcps<'a, T, N, M, E, B, F, V> {
+    ) -> HdBestFirstSearch<'a, T, N, M, E, B, F, V> {
         let mut time_keeper = parameters
             .parameters
             .time_limit
             .map_or_else(TimeKeeper::default, TimeKeeper::with_time_limit);
         let model = input.generator.model.clone();
-        let node_communicator = TimeStampedNodeDepthCommunicator::new(
+        let node_communicator = TimeStampedNodeCommunicator::new(
             communicator,
             Self::TAG_NODE,
             Self::TAG_TERMINATION_DETECTION,
@@ -90,10 +86,10 @@ where
             communicator,
         );
 
-        let mut open = vec![BinaryHeap::new()];
+        let mut open = BinaryHeap::new();
 
         search.generate_root_node(input.node, |node| {
-            open[0].push(node);
+            open.push(node);
         });
 
         time_keeper.stop();
@@ -103,8 +99,6 @@ where
             search,
             communicator,
             node_communicator,
-            progressive_parameters,
-            width: progressive_parameters.init,
             open,
             time_keeper,
             is_checking_termination: false,
@@ -115,16 +109,12 @@ where
     fn receive_node(&mut self, source_rank: Rank) {
         self.search.increment_received();
 
-        if let Some((node, depth)) = self
+        if let Some(node) = self
             .node_communicator
             .receive(source_rank, self.search.get_primal_bound())
         {
             let callback = |node| {
-                while depth >= self.open.len() {
-                    self.open.push(BinaryHeap::new());
-                }
-
-                self.open[depth].push(node);
+                self.open.push(node);
             };
 
             let node = N::from(node);
@@ -155,8 +145,7 @@ where
 
     fn receive_termination_detection(&mut self, source_rank: Rank) {
         let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
-        let local_invalid =
-            self.search.cannot_terminate() || self.open.iter().any(|o| !o.is_empty());
+        let local_invalid = self.search.cannot_terminate() || !self.open.is_empty();
         let result = self
             .node_communicator
             .receive_termination_detection_and_forward(
@@ -193,36 +182,25 @@ where
     pub fn search(mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
         self.time_keeper.start();
 
-        let mut current_depth = 0;
-        let mut no_node = true;
-        let mut goal_found = false;
         let mut time_out = false;
 
-        'outer: loop {
-            let mut popped = 0;
+        loop {
+            self.process_message();
 
-            while popped < self.width {
-                self.process_message();
+            if self.is_terminated {
+                break;
+            }
 
-                if self.is_terminated {
-                    break 'outer;
-                }
+            if self.communicator.rank() == self.search.get_root_rank()
+                && self.time_keeper.check_time_limit(self.search.is_quiet())
+            {
+                time_out = true;
+                self.broadcast_terminate();
+                self.is_terminated = true;
+                break;
+            }
 
-                if self.communicator.rank() == self.search.get_root_rank()
-                    && self.time_keeper.check_time_limit(self.search.is_quiet())
-                {
-                    time_out = true;
-                    self.broadcast_terminate();
-                    self.is_terminated = true;
-                    break 'outer;
-                }
-
-                if self.open[current_depth].is_empty() {
-                    break;
-                }
-
-                let node = self.open[current_depth].pop().unwrap();
-
+            if let Some(node) = self.open.pop() {
                 if node.is_closed() {
                     continue;
                 }
@@ -231,75 +209,30 @@ where
                 if let Some(dual_bound) = node.bound(&self.model) {
                     if exceed_bound(&self.model, dual_bound, self.search.get_primal_bound()) {
                         if N::ordered_by_bound() {
-                            self.open[current_depth].clear();
+                            self.open.clear();
                         }
                         continue;
                     }
                 }
 
-                if no_node {
-                    no_node = false;
-                }
-
-                popped += 1;
-
                 let local_callback = |successor| {
-                    while current_depth + 1 >= self.open.len() {
-                        self.open.push(BinaryHeap::default());
-                    }
-
-                    self.open[current_depth + 1].push(successor);
+                    self.open.push(successor);
                 };
 
                 let send_callback = |destination_rank, successor| {
-                    self.node_communicator
-                        .send(destination_rank, &successor, current_depth + 1);
+                    self.node_communicator.send(destination_rank, &successor);
                 };
 
-                goal_found |= self.search.expand(node, local_callback, send_callback);
-            }
-
-            if goal_found {
-                current_depth = 0;
-                no_node = true;
-                goal_found = false;
-
-                if self.progressive_parameters.reset {
-                    self.width = self.progressive_parameters.init;
-                } else {
-                    self.width = self.progressive_parameters.increase_width(self.width);
-                }
-            } else if current_depth + 1 == self.open.len() {
-                if no_node && !self.is_checking_termination {
-                    self.is_checking_termination = true;
-                    let destination_rank =
-                        (self.communicator.rank() + 1) % self.communicator.size();
-                    self.node_communicator
-                        .initiate_termination(destination_rank);
-                }
-
-                current_depth = 0;
-                no_node = true;
-
-                if self.open.iter().any(|o| !o.is_empty()) {
-                    self.width = self.progressive_parameters.increase_width(self.width);
-                }
-            } else {
-                current_depth += 1;
+                self.search.expand(node, local_callback, send_callback);
+            } else if !self.is_checking_termination {
+                self.is_checking_termination = true;
+                let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
+                self.node_communicator
+                    .initiate_termination(destination_rank);
             }
         }
 
-        let bounds = self
-            .open
-            .iter()
-            .flat_map(|o| o.peek().and_then(|node| node.bound(&self.model)));
-
-        let local_dual_bound = if self.model.reduce_function == ReduceFunction::Max {
-            bounds.max()
-        } else {
-            bounds.min()
-        };
-
+        let local_dual_bound = self.open.peek().and_then(|node| node.bound(&self.model));
         let (mut solution, statistics) = self.search.finalize(local_dual_bound);
 
         if time_out {
