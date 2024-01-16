@@ -863,14 +863,8 @@ where
                     .solution_manager
                     .check_solution(&successor, &self.id_to_chain_node);
 
-                if is_better_goal {
-                    if !better_goal_found {
-                        better_goal_found = true;
-                    }
-
-                    if no_successor {
-                        no_successor = false;
-                    }
+                if is_better_goal && !better_goal_found {
+                    better_goal_found = true;
                 }
 
                 if is_goal {
