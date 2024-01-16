@@ -597,9 +597,9 @@ where
                     // Receives a node.
                     while let Some(status) = any_process.immediate_probe_with_tag(TAG_NODE) {
                         let source_rank = status.source_rank();
+                        received += 1;
 
                         if let Some(node) = node_communicator.receive(source_rank, primal_bound) {
-                            received += 1;
                             let source_rank = source_rank as usize;
                             source_to_counter[source_rank] += 1;
 

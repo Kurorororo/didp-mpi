@@ -5,8 +5,6 @@ use std::cmp::max;
 
 pub struct MpiTerminationDetector<'a, C> {
     communicator: &'a C,
-    previous: Rank,
-    next: Rank,
     tag: Tag,
     clock: usize,
     tmax: usize,
@@ -43,16 +41,9 @@ where
     C: Communicator,
 {
     pub fn new(communicator: &'a C, tag: Tag) -> Self {
-        let rank = communicator.rank();
-        let size = communicator.size();
-        let previous = (rank + size - 1) % size;
-        let next = (rank + 1) % size;
-
         Self {
             communicator,
             tag,
-            previous,
-            next,
             clock: 0,
             tmax: 0,
             count: 0,
@@ -69,36 +60,37 @@ where
         self.count -= 1;
     }
 
-    pub fn initiate(&mut self) {
+    pub fn initiate(&mut self, destination_rank: Rank) {
         self.clock += 1;
-        let destination = self.communicator.process_at_rank(self.next);
+        let destination = self.communicator.process_at_rank(destination_rank);
         let message =
             TerminationDetectionkMessage(self.clock, self.count, false, self.communicator.rank());
         destination.buffered_send_with_tag(&message, self.tag);
     }
 
-    pub fn check_and_forward(&mut self, local_invalid: bool) -> Option<bool> {
-        let source = self.communicator.process_at_rank(self.previous);
+    pub fn receive_and_forward(
+        &mut self,
+        source_rank: Rank,
+        destination_rank: Rank,
+        local_invalid: bool,
+    ) -> Option<bool> {
+        let source = self.communicator.process_at_rank(source_rank);
 
-        if source.immediate_probe_with_tag(self.tag).is_some() {
-            let mut message = TerminationDetectionkMessage::default();
-            source.receive_into_with_tag(&mut message, self.tag);
+        let mut message = TerminationDetectionkMessage::default();
+        source.receive_into_with_tag(&mut message, self.tag);
 
-            self.clock = max(message.0, self.clock);
-            let invalid = message.2 || local_invalid;
+        self.clock = max(message.0, self.clock);
+        let invalid = message.2 || local_invalid;
 
-            if self.communicator.rank() == message.3 {
-                Some(message.1 == 0 && !invalid)
-            } else {
-                let destination = self.communicator.process_at_rank(self.next);
-                message.1 += self.count;
-                message.2 = invalid || self.tmax >= message.0;
-
-                destination.buffered_send_with_tag(&message, self.tag);
-
-                Some(false)
-            }
+        if self.communicator.rank() == message.3 {
+            Some(message.1 == 0 && !invalid)
         } else {
+            let destination = self.communicator.process_at_rank(destination_rank);
+            message.1 += self.count;
+            message.2 = invalid || self.tmax >= message.0;
+
+            destination.buffered_send_with_tag(&message, self.tag);
+
             None
         }
     }

@@ -75,7 +75,6 @@ where
 pub struct TimeStampedNodeCommunicator<'a, C, M, T> {
     model: Rc<Model>,
     communicator: TimestampedCommunicator<'a, C>,
-    tag: Tag,
     state_serializer: StateSerializer,
     tmp_buffer: Vec<u8>,
     _phantom: PhantomData<(M, T)>,
@@ -87,7 +86,12 @@ where
     M: NodeDatatype<T>,
     T: Numeric + IsFloat,
 {
-    pub fn new(communicator: &'a C, tag: Tag, model: Rc<Model>) -> Self {
+    pub fn new(
+        communicator: &'a C,
+        tag: Tag,
+        tag_termination_detection: Tag,
+        model: Rc<Model>,
+    ) -> Self {
         let state_serializer = StateSerializer::with_model(&model);
 
         let blocklengths = M::get_datatype_blocklengths(&state_serializer);
@@ -98,6 +102,7 @@ where
         let communicator = TimestampedCommunicator::new(
             communicator,
             tag,
+            tag_termination_detection,
             &blocklengths,
             &displacements,
             &types,
@@ -109,7 +114,6 @@ where
         Self {
             model,
             communicator,
-            tag,
             state_serializer,
             tmp_buffer,
             _phantom: PhantomData,
@@ -136,12 +140,28 @@ where
 
         Some(node)
     }
+
+    pub fn initiate_termination(&mut self, destination_rank: Rank) {
+        self.communicator.initiate_termination(destination_rank);
+    }
+
+    pub fn receive_termination_detection_and_forward(
+        &mut self,
+        source_rank: Rank,
+        destination_rank: Rank,
+        local_invalid: bool,
+    ) -> Option<bool> {
+        self.communicator.receive_termination_detection_and_forward(
+            source_rank,
+            destination_rank,
+            local_invalid,
+        )
+    }
 }
 
 pub struct TimeStampedNodeDepthCommunicator<'a, C, M, T> {
     model: Rc<Model>,
     communicator: TimestampedCommunicator<'a, C>,
-    tag: Tag,
     state_serializer: StateSerializer,
     offset: usize,
     tmp_buffer: Vec<u8>,
@@ -154,7 +174,12 @@ where
     M: NodeDatatype<T>,
     T: Numeric + IsFloat,
 {
-    pub fn new(communicator: &'a C, tag: Tag, model: Rc<Model>) -> Self {
+    pub fn new(
+        communicator: &'a C,
+        tag: Tag,
+        tag_termination_detection: Tag,
+        model: Rc<Model>,
+    ) -> Self {
         let state_serializer = StateSerializer::with_model(&model);
 
         let mut blocklengths = M::get_datatype_blocklengths(&state_serializer);
@@ -170,6 +195,7 @@ where
         let communicator = TimestampedCommunicator::new(
             communicator,
             tag,
+            tag_termination_detection,
             &blocklengths,
             &displacements,
             &types,
@@ -181,7 +207,6 @@ where
         Self {
             model,
             communicator,
-            tag,
             state_serializer,
             offset,
             tmp_buffer,
@@ -191,7 +216,8 @@ where
 
     pub fn send(&mut self, destination_rank: Rank, node: &M, depth: usize) {
         node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
-        self.tmp_buffer[self.offset..].copy_from_slice(depth.as_bytes());
+        self.tmp_buffer[self.offset..self.offset + mem::size_of::<usize>()]
+            .copy_from_slice(depth.as_bytes());
 
         self.communicator
             .send(&mut self.tmp_buffer, destination_rank);
@@ -213,5 +239,22 @@ where
                 .unwrap();
 
         Some((node, depth))
+    }
+
+    pub fn initiate_termination(&mut self, destination_rank: Rank) {
+        self.communicator.initiate_termination(destination_rank);
+    }
+
+    pub fn receive_termination_detection_and_forward(
+        &mut self,
+        source_rank: Rank,
+        destination_rank: Rank,
+        local_invalid: bool,
+    ) -> Option<bool> {
+        self.communicator.receive_termination_detection_and_forward(
+            source_rank,
+            destination_rank,
+            local_invalid,
+        )
     }
 }

@@ -21,6 +21,7 @@ where
     pub fn new(
         communicator: &'a C,
         tag: Tag,
+        tag_termination_detection: Tag,
         blocklengths: &[Count],
         displacements: &[Address],
         types: &[DatatypeRef<'static>],
@@ -33,7 +34,8 @@ where
         let mut types = types.to_vec();
         types.push(usize::equivalent_datatype());
 
-        let termination_detector = MpiTerminationDetector::new(communicator, tag);
+        let termination_detector =
+            MpiTerminationDetector::new(communicator, tag_termination_detection);
         let datatype = UserDatatype::structured(&blocklengths, &displacements, &types);
 
         Self {
@@ -68,11 +70,17 @@ where
         buffer.truncate(self.offset);
     }
 
-    pub fn initiate_termination(&mut self) {
-        self.termination_detector.initiate();
+    pub fn initiate_termination(&mut self, destination_rank: Rank) {
+        self.termination_detector.initiate(destination_rank);
     }
 
-    pub fn termination_check_and_forward(&mut self, local_invalid: bool) -> Option<bool> {
-        self.termination_detector.check_and_forward(local_invalid)
+    pub fn receive_termination_detection_and_forward(
+        &mut self,
+        source_rank: Rank,
+        destination_rank: Rank,
+        local_invalid: bool,
+    ) -> Option<bool> {
+        self.termination_detector
+            .receive_and_forward(source_rank, destination_rank, local_invalid)
     }
 }

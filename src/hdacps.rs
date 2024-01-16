@@ -2,41 +2,24 @@ use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::prelude::*;
 use dypdl::variable_type::Numeric;
 use dypdl_heuristic_search::search_algorithm::data_structure::{
-    exceed_bound, Beam, HashableSignatureVariables,
+    exceed_bound, HashableSignatureVariables,
 };
-use dypdl_heuristic_search::search_algorithm::util::{print_dual_bound, TimeKeeper};
-use dypdl_heuristic_search::search_algorithm::{
-    get_solution_cost_and_suffix, BeamSearchParameters, SearchInput, Solution, StateRegistry,
-    SuccessorGenerator, TransitionWithId,
-};
-use dypdl_heuristic_search::{Parameters, ProgressiveSearchParameters};
-use memoffset::offset_of;
-use mpi::datatype::SystemDatatype;
-use mpi::{
-    datatype::{MutView, UserDatatype, View},
-    topology::SimpleCommunicator,
-    Rank, Tag,
-};
-use mpi::{traits::*, Address};
+use dypdl_heuristic_search::search_algorithm::util::TimeKeeper;
+use dypdl_heuristic_search::search_algorithm::{SearchInput, Solution, TransitionWithId};
+use dypdl_heuristic_search::ProgressiveSearchParameters;
+use mpi::traits::*;
+use mpi::{topology::SimpleCommunicator, Rank, Tag};
 use std::collections::BinaryHeap;
 use std::fmt::{Debug, Display};
-use std::marker::PhantomData;
-use std::mem;
 use std::rc::Rc;
 use std::str::FromStr;
-use zerocopy::{AsBytes, FromBytes};
 
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
-use crate::distributed_id_chain::{
-    DistributedTransitionIdChain, GetDistributedTransitionIdChain, TransitionId,
-};
 use crate::is_float::IsFloat;
-use crate::node_communicator::{self, TimeStampedNodeDepthCommunicator};
+use crate::mpi_anytime_search::{MpiAnytimeSearch, MpiAnytimeSearchParameters};
+use crate::node_communicator::TimeStampedNodeDepthCommunicator;
 use crate::node_data_type::NodeDatatype;
-use crate::partial_solution::{receive_partial_solution, send_partial_solution};
-use crate::state_serializer::StateSerializer;
 use crate::statistics::Statistics;
-use crate::write_solution;
 
 pub struct HdAcps<'a, T, N, M, E, B, F, V = Transition>
 where
@@ -44,32 +27,16 @@ where
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
     V: TransitionInterface + Clone + Default,
 {
+    model: Rc<Model>,
+    search: MpiAnytimeSearch<'a, T, N, M, E, B, F, V>,
     communicator: &'a SimpleCommunicator,
     node_communicator: TimeStampedNodeDepthCommunicator<'a, SimpleCommunicator, M, T>,
-    hash_function: F,
-    generator: SuccessorGenerator<TransitionWithId<V>>,
-    suffix: &'a [TransitionWithId<V>],
-    transition_evaluator: E,
-    base_cost_evaluator: B,
     progressive_parameters: ProgressiveSearchParameters,
-    primal_bound: Option<T>,
-    get_all_solutions: bool,
-    quiet: bool,
     width: usize,
     open: Vec<BinaryHeap<Rc<N>>>,
-    registry: StateRegistry<T, N>,
-    id_to_chain_node: Vec<Rc<DistributedTransitionIdChain>>,
-    layer_index: usize,
-    node_index: usize,
-    no_node: bool,
-    goal_found: bool,
-    dual_bound_candidate: Option<T>,
     time_keeper: TimeKeeper,
-    solution: Solution<T, TransitionWithId<V>>,
-    statistics: Statistics,
-    reverse_transition_ids: Vec<TransitionId>,
-    partial_solution_timestamp: usize,
-    _phantom: PhantomData<M>,
+    is_checking_termination: bool,
+    is_terminated: bool,
 }
 
 impl<'a, T, N, M, E, B, F, V> HdAcps<'a, T, N, M, E, B, F, V>
@@ -79,156 +46,274 @@ where
     CostToDump: From<T>,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
     M: Clone + NodeDatatype<T>,
-    E: Fn(&N, &TransitionWithId<V>, &mut StateRegistry<T, N>, Option<T>) -> Option<(Rc<N>, bool)>,
-    B: Fn(T, T) -> T,
-    F: Fn(&HashableSignatureVariables) -> u64,
-    V: TransitionInterface + Clone + Default,
+    E: FnMut(&N, &TransitionWithId<V>, Option<T>) -> Option<M>,
+    B: FnMut(T, T) -> T,
+    F: FnMut(&HashableSignatureVariables) -> u64,
+    V: TransitionInterface + Clone + Default + 'static,
     Transition: From<V> + From<TransitionWithId<V>>,
     TransitionWithId<V>: Clone,
 {
-    const TAG_NODE: Tag = 0;
-    const TAG_PRIMAL_BOUND: Tag = 1;
-    const TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA: Tag = 2;
-    const TAG_PARTIAL_SOLUTION_TRANSITION_IDS: Tag = 3;
-    const TAG_TERMINATION_DETECTION: Tag = 4;
-    const TAG_N_TRANSITION_IDS: Tag = 5;
-    const TAG_REVERSE_TRANSITION_IDS: Tag = 6;
-    const TAG_TERMINATE: Tag = 7;
+    const TAG_NODE: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET;
+    const TAG_TERMINATION_DETECTION: Tag =
+        MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 1;
+    const TAG_TERMINATE: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 2;
 
     /// Creates a new HDACPS solver.
     pub fn new(
         input: SearchInput<'a, M, TransitionWithId<V>>,
         transition_evaluator: E,
         base_cost_evaluator: B,
-        parameters: Parameters<T>,
+        parameters: MpiAnytimeSearchParameters<T>,
         progressive_parameters: ProgressiveSearchParameters,
         hash_function: F,
         communicator: &'a SimpleCommunicator,
     ) -> HdAcps<'a, T, N, M, E, B, F, V> {
         let mut time_keeper = parameters
+            .parameters
             .time_limit
             .map_or_else(TimeKeeper::default, TimeKeeper::with_time_limit);
-        let primal_bound = parameters.primal_bound;
-        let quiet = parameters.quiet;
-        let n_ranks = communicator.size();
-
-        let mut open = vec![BinaryHeap::new()];
-        let mut registry = StateRegistry::<_, _>::new(input.generator.model.clone());
-
-        if let Some(capacity) = parameters.initial_registry_capacity {
-            registry.reserve(capacity);
-        }
-
-        let mut solution = Solution::default();
-        let mut statistics = Statistics::default();
-
-        if let Some(node) = input.node {
-            let hash_value = hash_function(node.get_signature());
-            let assigned_rank = (hash_value % n_ranks as u64) as Rank;
-
-            if assigned_rank == communicator.rank() {
-                let node = N::from(node);
-                let (node, _) = registry.insert(node).unwrap();
-                solution.generated += 1;
-                statistics.generated += 1;
-                solution.best_bound = node.bound(&input.generator.model);
-                open[0].push(node);
-
-                if !quiet {
-                    solution.time = time_keeper.elapsed_time();
-                    print_dual_bound(&solution);
-                }
-            }
-        } else {
-            solution.is_infeasible = true;
-        }
-
+        let model = input.generator.model.clone();
         let node_communicator = TimeStampedNodeDepthCommunicator::new(
             communicator,
             Self::TAG_NODE,
-            input.generator.model.clone(),
+            Self::TAG_TERMINATION_DETECTION,
+            model.clone(),
         );
+
+        let mut search = MpiAnytimeSearch::new(
+            input.generator,
+            input.solution_suffix,
+            transition_evaluator,
+            base_cost_evaluator,
+            parameters,
+            hash_function,
+            communicator,
+        );
+
+        let mut open = vec![BinaryHeap::new()];
+
+        search.generate_root_node(input.node, |node| {
+            open[0].push(node);
+        });
+
         time_keeper.stop();
 
         Self {
+            model,
+            search,
             communicator,
             node_communicator,
-            hash_function,
-            generator: input.generator,
-            suffix: input.solution_suffix,
-            transition_evaluator,
-            base_cost_evaluator,
             progressive_parameters,
-            primal_bound,
-            get_all_solutions: parameters.get_all_solutions,
-            quiet,
             width: progressive_parameters.init,
             open,
-            registry,
-            id_to_chain_node: Vec::default(),
-            layer_index: 0,
-            node_index: 0,
-            no_node: true,
-            goal_found: false,
-            dual_bound_candidate: None,
             time_keeper,
-            solution,
-            statistics,
-            reverse_transition_ids: Vec::default(),
-            partial_solution_timestamp: 0,
-            _phantom: PhantomData,
+            is_checking_termination: false,
+            is_terminated: false,
         }
     }
 
-    pub fn update_solution_transitions(&mut self, reverse_transition_ids: &[TransitionId]) {
-        self.solution.transitions = reverse_transition_ids
-            .iter()
-            .rev()
-            .map(|id| {
-                if id.1 {
-                    self.generator.forced_transitions[id.0].as_ref().clone()
-                } else {
-                    self.generator.transitions[id.0].as_ref().clone()
+    fn receive_node(&mut self, source_rank: Rank) {
+        self.search.increment_received();
+
+        if let Some((node, depth)) = self
+            .node_communicator
+            .receive(source_rank, self.search.get_primal_bound())
+        {
+            let callback = |node| {
+                while depth >= self.open.len() {
+                    self.open.push(BinaryHeap::new());
                 }
-            })
-            .collect::<Vec<_>>();
 
-        if self.communicator.rank() == 0 {
-            write_solution(&self.solution, "solution.yaml");
+                self.open[depth].push(node);
+            };
+
+            let node = N::from(node);
+            self.search.open_node(node, callback);
         }
     }
 
-    pub fn send_solution(&self) {
-        let destination = self.communicator.process_at_rank(0);
-        let n = self.reverse_transition_ids.len();
-        destination.buffered_send_with_tag(&n, Self::TAG_N_TRANSITION_IDS);
-        destination.buffered_send_with_tag(
-            &self.reverse_transition_ids,
-            Self::TAG_REVERSE_TRANSITION_IDS,
-        );
+    fn broadcast_terminate(&mut self) {
+        for destination_rank in 0..self.communicator.size() {
+            if destination_rank != self.communicator.rank() {
+                let buffer: [u8; 0] = [];
+                self.communicator
+                    .process_at_rank(destination_rank)
+                    .buffered_send_with_tag(&buffer, Self::TAG_TERMINATE);
+            }
+        }
+
+        self.is_terminated = true;
     }
 
-    pub fn receive_solution(&mut self, source_rank: Rank) {
-        let source = self.communicator.process_at_rank(source_rank);
-        let mut n = 0;
-        source.receive_into_with_tag(&mut n, Self::TAG_N_TRANSITION_IDS);
-        let mut tmp_transition_ids = vec![TransitionId::default(); n];
-        source.receive_into_with_tag(&mut tmp_transition_ids, Self::TAG_REVERSE_TRANSITION_IDS);
-        self.update_solution_transitions(&tmp_transition_ids);
+    fn receive_terminate(&mut self, source_rank: Rank) {
+        let mut buffer: [u8; 0] = [];
+        self.communicator
+            .process_at_rank(source_rank)
+            .receive_into_with_tag(&mut buffer, Self::TAG_TERMINATE);
+        self.is_terminated = true;
     }
 
-    pub fn notify_primal_bound_and_request_partial_solution(&mut self, node: &N) {
-        let chain = node.get_distributed_transition_id_chain();
-        let (transition_ids, parent) =
-            chain.get_transition_ids_in_this_rank(&self.id_to_chain_node);
-        self.reverse_transition_ids = transition_ids;
+    fn receive_termination_detection(&mut self, source_rank: Rank) {
+        let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
+        let local_invalid =
+            self.search.cannot_terminate() || self.open.iter().any(|o| !o.is_empty());
+        let result = self
+            .node_communicator
+            .receive_termination_detection_and_forward(
+                source_rank,
+                destination_rank,
+                local_invalid,
+            );
 
-        if let Some((parent_rank, parent_id)) = parent {
+        if let Some(result) = result {
+            if result {
+                self.broadcast_terminate();
+            }
+
+            self.is_checking_termination = false;
+        }
+    }
+
+    fn process_message(&mut self) {
+        let any_process = self.communicator.any_process();
+
+        while let Some(status) = any_process.immediate_probe() {
+            let source_rank = status.source_rank();
+            let tag = status.tag();
+
+            match tag {
+                Self::TAG_NODE => self.receive_node(source_rank),
+                Self::TAG_TERMINATION_DETECTION => self.receive_termination_detection(source_rank),
+                Self::TAG_TERMINATE => self.receive_terminate(source_rank),
+                _ => self.search.receive_message(source_rank, tag),
+            }
+        }
+    }
+
+    pub fn search(mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
+        self.time_keeper.start();
+
+        let mut current_depth = 0;
+        let mut no_node = true;
+        let mut goal_found = false;
+        let mut time_out = false;
+
+        'outer: loop {
+            let mut popped = 0;
+
+            while popped < self.width {
+                self.process_message();
+
+                if self.is_terminated {
+                    break 'outer;
+                }
+
+                if self.communicator.rank() == self.search.get_root_rank()
+                    && self.time_keeper.check_time_limit(self.search.is_quiet())
+                {
+                    time_out = true;
+                    self.broadcast_terminate();
+                    self.is_terminated = true;
+                    break 'outer;
+                }
+
+                if self.open[current_depth].is_empty() {
+                    break;
+                }
+
+                let node = self.open[current_depth].pop().unwrap();
+
+                if node.is_closed() {
+                    continue;
+                }
+                node.close();
+
+                if let Some(dual_bound) = node.bound(&self.model) {
+                    if exceed_bound(&self.model, dual_bound, self.search.get_primal_bound()) {
+                        if N::ordered_by_bound() {
+                            self.open[current_depth].clear();
+                        }
+                        continue;
+                    }
+                }
+
+                if no_node {
+                    no_node = false;
+                }
+
+                popped += 1;
+
+                let local_callback = |successor| {
+                    while current_depth + 1 >= self.open.len() {
+                        self.open.push(BinaryHeap::default());
+                    }
+
+                    self.open[current_depth + 1].push(successor);
+                };
+
+                let send_callback = |destination_rank, successor| {
+                    self.node_communicator
+                        .send(destination_rank, &successor, current_depth + 1);
+                };
+
+                goal_found |= self.search.expand(node, local_callback, send_callback);
+            }
+
+            if goal_found {
+                current_depth = 0;
+                no_node = true;
+                goal_found = false;
+
+                if self.progressive_parameters.reset {
+                    self.width = self.progressive_parameters.init;
+                } else {
+                    self.width = self.progressive_parameters.increase_width(self.width);
+                }
+            } else if current_depth + 1 == self.open.len() {
+                if no_node && !self.is_checking_termination {
+                    self.is_checking_termination = true;
+                    let destination_rank =
+                        (self.communicator.rank() + 1) % self.communicator.size();
+                    self.node_communicator
+                        .initiate_termination(destination_rank);
+                }
+
+                current_depth = 0;
+                no_node = true;
+
+                if self.open.iter().any(|o| !o.is_empty()) {
+                    self.width = self.progressive_parameters.increase_width(self.width);
+                }
+            } else {
+                current_depth += 1;
+            }
+        }
+
+        let bounds = self
+            .open
+            .iter()
+            .flat_map(|o| o.peek().map(|node| node.bound(&self.model)))
+            .flatten();
+
+        let local_dual_bound = if self.model.reduce_function == ReduceFunction::Max {
+            bounds.max()
         } else {
-        }
-    }
+            bounds.min()
+        };
 
-    pub fn search(&mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
-        (self.solution.clone(), Vec::default())
+        let (mut solution, statistics) = self.search.finalize(local_dual_bound);
+
+        if time_out {
+            solution.time_out = true;
+            solution.is_optimal = false;
+            solution.is_infeasible = false;
+        } else {
+            solution.is_optimal = solution.cost.is_some();
+            solution.is_infeasible = solution.cost.is_none();
+        }
+
+        solution.time = self.time_keeper.elapsed_time();
+
+        (solution, statistics)
     }
 }

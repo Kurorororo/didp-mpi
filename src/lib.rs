@@ -7,13 +7,13 @@ mod hd_beam_search2;
 mod hdacps;
 mod io;
 mod is_float;
+mod mpi_anytime_search;
 mod mpi_termination_detector;
 mod node_communicator;
 mod node_data_type;
 mod partial_solution;
 mod state_serializer;
 mod statistics;
-mod hd_anytime_search;
 mod timestamped_communicator;
 
 pub use distributed_f_node::DistributedFNode;
@@ -22,9 +22,11 @@ pub use hash_functions::{
     create_fx_hash, create_set_zobrist_hash, create_set_zobrist_hash_with_others,
 };
 pub use hd_beam_search2::hd_beam_search2;
+pub use hdacps::HdAcps;
 pub use io::{
     dump_solution, load_parameters_from_map, read_model, write_solution,
     AdditionalCommonParameters, HashType,
 };
 pub use is_float::IsFloat;
+pub use mpi_anytime_search::MpiAnytimeSearchParameters;
 pub use statistics::Statistics;

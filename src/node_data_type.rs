@@ -1,11 +1,14 @@
-use dypdl::prelude::*;
+use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::search_algorithm::data_structure::HashableSignatureVariables;
 use mpi::{
     datatype::{DatatypeRef, UserDatatype},
     Address, Count, Rank,
 };
 
-use crate::{is_float::IsFloat, state_serializer::StateSerializer};
+use crate::{
+    distributed_id_chain::DistributedTransitionIdChain, is_float::IsFloat,
+    state_serializer::StateSerializer,
+};
 
 pub trait NodeDatatype<T: IsFloat> {
     fn get_total_size(serializer: &StateSerializer) -> usize;
@@ -33,4 +36,17 @@ pub trait NodeDatatype<T: IsFloat> {
     fn get_bound(model: &Model, serializer: &StateSerializer, buffer: &[u8]) -> Option<T>;
 
     fn set_parent_rank(&self, parent_rank: Rank);
+
+    fn get_solution_cost_and_suffix<'a, V, B>(
+        &self,
+        model: &Model,
+        suffix: &'a [V],
+        base_cost_evaluator: B,
+    ) -> Option<(T, &'a [V])>
+    where
+        T: Numeric + Ord,
+        V: TransitionInterface,
+        B: FnMut(T, T) -> T;
+
+    fn get_distributed_transition_id_chain(&self) -> &DistributedTransitionIdChain;
 }

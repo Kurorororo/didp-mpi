@@ -10,7 +10,7 @@ use dypdl::variable_type::Numeric;
 use dypdl_heuristic_search::search_algorithm::data_structure::{
     exceed_bound, HashableSignatureVariables, StateInformation, StateWithHashableSignatureVariables,
 };
-use dypdl_heuristic_search::search_algorithm::{StateInRegistry, TransitionWithId};
+use dypdl_heuristic_search::search_algorithm::{rollout, StateInRegistry, TransitionWithId};
 use mpi::datatype::DatatypeRef;
 use mpi::traits::*;
 use mpi::{Address, Count, Rank};
@@ -204,6 +204,30 @@ where
 
     fn set_parent_rank(&self, parent_rank: Rank) {
         self.transition_id_chain.parent_rank.set(Some(parent_rank));
+    }
+
+    fn get_solution_cost_and_suffix<'a, V, B>(
+        &self,
+        model: &Model,
+        suffix: &'a [V],
+        base_cost_evaluator: B,
+    ) -> Option<(T, &'a [V])>
+    where
+        T: Numeric + Ord,
+        V: TransitionInterface,
+        B: FnMut(T, T) -> T,
+    {
+        let result = rollout(&self.state, self.g, suffix, base_cost_evaluator, model)?;
+
+        if result.is_base {
+            Some((result.cost, result.transitions))
+        } else {
+            None
+        }
+    }
+
+    fn get_distributed_transition_id_chain(&self) -> &DistributedTransitionIdChain {
+        &self.transition_id_chain
     }
 }
 

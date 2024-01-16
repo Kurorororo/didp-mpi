@@ -1,5 +1,3 @@
-use core::time;
-
 use memoffset::offset_of;
 use mpi::datatype::UserDatatype;
 use mpi::traits::*;
