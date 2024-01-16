@@ -10,7 +10,7 @@ dypdl = { path = "../didp-rs/dypdl" }
 dypdl-heuristic-search = { path = "../didp-rs/dypdl-heuristic-search" }
 didp-yaml = { path = "../didp-rs/didp-yaml" }
 mpi = "0.7"
-zerocopy = "0.7.32"
+zerocopy = "0.7"
 yaml-rust = "0.4"
 linked-hash-map = "0.5"
 rustc-hash = "1.1"
