@@ -213,11 +213,12 @@ where
     transitions: Vec<TransitionWithId<V>>,
     communicator: &'a SimpleCommunicator,
     root_rank: Rank,
-    primal_bound: Option<T>,
     base_cost_evaluator: B,
     suffix: &'a [TransitionWithId<V>],
+    primal_bound: Option<T>,
     solution: Solution<T, TransitionWithId<V>>,
     statistics: Statistics,
+    local_solution_cost: Option<T>,
     reverse_transition_ids: Vec<TransitionId>,
     is_retrieving_partial_solution: bool,
     partial_solution_timestamp: usize,
@@ -277,9 +278,10 @@ where
             root_rank,
             base_cost_evaluator,
             suffix,
+            primal_bound,
             solution: Solution::default(),
             statistics: Statistics::default(),
-            primal_bound,
+            local_solution_cost: None,
             reverse_transition_ids: Vec::default(),
             is_retrieving_partial_solution: false,
             partial_solution_timestamp: 0,
@@ -444,7 +446,7 @@ where
         ) {
             if !exceed_bound(&self.model, cost, self.primal_bound) {
                 self.primal_bound = Some(cost);
-                self.solution.cost = Some(cost);
+                self.local_solution_cost = Some(cost);
 
                 self.broadcast_primal_bound();
 
@@ -465,6 +467,7 @@ where
                         .buffered_send_with_tag(&buffer, Self::TAG_PARTIAL_SOLUTION_REQUEST);
                 } else {
                     let reverse_transition_ids = self.reverse_transition_ids.clone();
+                    self.solution.cost = self.local_solution_cost;
                     self.update_solution_transitions(&reverse_transition_ids);
 
                     if self.communicator.rank() != self.root_rank {
@@ -525,6 +528,7 @@ where
             } else {
                 self.is_retrieving_partial_solution = false;
                 let reverse_transition_ids = self.reverse_transition_ids.clone();
+                self.solution.cost = self.local_solution_cost;
                 self.update_solution_transitions(&reverse_transition_ids);
 
                 if self.communicator.rank() != self.root_rank {
