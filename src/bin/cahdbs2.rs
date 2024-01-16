@@ -85,6 +85,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
             parameters,
             &hash_function,
             &communicator,
+            0,
         );
         statistics += tmp_statistics;
 

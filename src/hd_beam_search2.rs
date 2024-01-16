@@ -321,6 +321,7 @@ pub fn hd_beam_search2<'a, T, N, M, E, B, F, V>(
     parameters: BeamSearchParameters<T>,
     hash_function: F,
     communicator: &'a SimpleCommunicator,
+    controller_rank: Rank,
 ) -> (Solution<T, TransitionWithId<V>>, Option<Rank>, Statistics)
 where
     T: Numeric + IsFloat + Ord + Display,
@@ -379,7 +380,7 @@ where
     let mut pruned = false;
     let mut best_dual_bound = None;
     let mut layer_dual_bound = None;
-    let mut time_out = this_rank == 0 && time_keeper.check_time_limit(quiet);
+    let mut time_out = this_rank == controller_rank && time_keeper.check_time_limit(quiet);
     let mut incumbent = None;
 
     for destination_rank in 0..n_ranks as Rank {
@@ -648,7 +649,7 @@ where
             }
         }
 
-        if !quiet && this_rank == 0 {
+        if !quiet {
             println!(
                 "Searched layer: {}, elapsed time: {}",
                 layer_index,
