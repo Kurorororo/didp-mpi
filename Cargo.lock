@@ -207,7 +207,9 @@ dependencies = [
 
 [[package]]
 name = "didp-yaml"
-version = "0.6.1"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d938e1e5df9898c3511b0414b5b99df55e59726e2f6158f2036be32505880a2b"
 dependencies = [
  "approx",
  "dypdl",
@@ -224,7 +226,9 @@ dependencies = [
 
 [[package]]
 name = "dypdl"
-version = "0.6.1"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e281f45f11a6b53268b718e641f9c4a59cb8f7afece7eb123bbfc4892f9da736"
 dependencies = [
  "approx",
  "fixedbitset",
@@ -235,7 +239,9 @@ dependencies = [
 
 [[package]]
 name = "dypdl-heuristic-search"
-version = "0.6.1"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5ed5219a6e5c0979a1355ed9b9db78df92efc72774c33dd4e2d4792075ad958d"
 dependencies = [
  "bus",
  "crossbeam-channel",

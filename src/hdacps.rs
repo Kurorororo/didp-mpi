@@ -289,18 +289,7 @@ where
             }
         }
 
-        let bounds = self
-            .open
-            .iter()
-            .flat_map(|o| o.peek().and_then(|node| node.bound(&self.model)));
-
-        let local_dual_bound = if self.model.reduce_function == ReduceFunction::Max {
-            bounds.max()
-        } else {
-            bounds.min()
-        };
-
-        let (mut solution, statistics) = self.search.finalize(local_dual_bound);
+        let (mut solution, statistics) = self.search.finalize(None);
 
         if time_out {
             solution.time_out = true;

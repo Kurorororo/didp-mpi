@@ -232,8 +232,7 @@ where
             }
         }
 
-        let local_dual_bound = self.open.peek().and_then(|node| node.bound(&self.model));
-        let (mut solution, statistics) = self.search.finalize(local_dual_bound);
+        let (mut solution, statistics) = self.search.finalize(None);
 
         if time_out {
             solution.time_out = true;
