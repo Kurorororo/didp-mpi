@@ -1,5 +1,5 @@
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
-use crate::distributed_id_chain::{GetDistributedTransitionIdChain, TransitionId};
+use crate::distributed_id_chain::GetDistributedTransitionIdChain;
 
 use super::distributed_id_chain::DistributedTransitionIdChain;
 use dypdl::prelude::*;
@@ -113,7 +113,7 @@ where
 
         let transition_id_chain = Rc::new(
             self.transition_id_chain
-                .generate_successor(TransitionId(transition.id, transition.forced)),
+                .generate_successor(transition.id, transition.forced),
         );
 
         Some(Self::new(state, g, h, f, transition_id_chain))
@@ -161,7 +161,7 @@ where
 
             let transition_id_chain = Rc::new(
                 self.transition_id_chain
-                    .generate_successor(TransitionId(transition.id, transition.forced)),
+                    .generate_successor(transition.id, transition.forced),
             );
 
             Some(Self::new(state, g, h, f, transition_id_chain))

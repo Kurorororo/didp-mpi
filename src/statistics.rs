@@ -82,11 +82,8 @@ impl Statistics {
 
         if is_root {
             let mut recvbuf = [0; 5];
-            communicator.process_at_rank(root_rank).reduce_into_root(
-                &sendbuf,
-                &mut recvbuf[..],
-                SystemOperation::sum(),
-            );
+            let root_process = communicator.process_at_rank(root_rank);
+            root_process.reduce_into_root(&sendbuf, &mut recvbuf[..], SystemOperation::sum());
             Some(Self {
                 expanded: recvbuf[0],
                 generated: recvbuf[1],
@@ -95,9 +92,8 @@ impl Statistics {
                 received: recvbuf[4],
             })
         } else {
-            communicator
-                .process_at_rank(root_rank)
-                .reduce_into(&sendbuf, SystemOperation::sum());
+            let root_process = communicator.process_at_rank(root_rank);
+            root_process.reduce_into(&sendbuf, SystemOperation::sum());
             None
         }
     }
@@ -119,9 +115,8 @@ impl Statistics {
         if is_root {
             let n_ranks = communicator.size() as usize;
             let mut recvbuf = vec![0; 5 * n_ranks];
-            communicator
-                .process_at_rank(root_rank)
-                .gather_into_root(&sendbuf, &mut recvbuf[..]);
+            let root_process = communicator.process_at_rank(root_rank);
+            root_process.gather_into_root(&sendbuf, &mut recvbuf[..]);
 
             (0..n_ranks)
                 .map(|rank| {
@@ -136,9 +131,8 @@ impl Statistics {
                 })
                 .collect()
         } else {
-            communicator
-                .process_at_rank(root_rank)
-                .gather_into(&sendbuf);
+            let root_process = communicator.process_at_rank(root_rank);
+            root_process.gather_into(&sendbuf);
             vec![]
         }
     }

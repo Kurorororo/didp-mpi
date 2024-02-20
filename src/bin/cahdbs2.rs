@@ -89,7 +89,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         );
         statistics += tmp_statistics;
 
-        if goal_rank == Some(communicator.rank()) {
+        if goal_rank == Some(communicator.rank()) && solution.cost.is_some() {
             write_solution(&solution, "solution.yaml");
         }
 

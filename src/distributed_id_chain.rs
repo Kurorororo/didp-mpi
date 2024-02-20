@@ -1,5 +1,3 @@
-use memoffset::offset_of;
-use mpi::datatype::UserDatatype;
 use mpi::traits::*;
 use mpi::{datatype::DatatypeRef, Address, Count, Rank};
 use std::cell::Cell;
@@ -7,28 +5,11 @@ use std::mem::size_of;
 use std::rc::Rc;
 use zerocopy::{AsBytes, FromBytes};
 
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct TransitionId(pub usize, pub bool);
-
-unsafe impl Equivalence for TransitionId {
-    type Out = UserDatatype;
-
-    fn equivalent_datatype() -> Self::Out {
-        UserDatatype::structured(
-            &[1, 1],
-            &[
-                offset_of!(TransitionId, 0) as Address,
-                offset_of!(TransitionId, 1) as Address,
-            ],
-            &[usize::equivalent_datatype(), bool::equivalent_datatype()],
-        )
-    }
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DistributedTransitionIdChainData {
     parent_chain_id: usize,
-    last_transition_id: TransitionId,
+    last_transition_id: usize,
+    last_transition_forced: bool,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -39,10 +20,11 @@ pub struct DistributedTransitionIdChain {
 }
 
 impl DistributedTransitionIdChain {
-    pub fn generate_successor(&self, transition_id: TransitionId) -> Self {
+    pub fn generate_successor(&self, transition_id: usize, forced: bool) -> Self {
         let data = DistributedTransitionIdChainData {
             parent_chain_id: self.id.get().unwrap(),
             last_transition_id: transition_id,
+            last_transition_forced: forced,
         };
 
         DistributedTransitionIdChain {
@@ -55,12 +37,14 @@ impl DistributedTransitionIdChain {
     pub fn get_transition_ids_in_this_rank(
         &self,
         id_to_chain_node: &[Rc<Self>],
-    ) -> (Vec<TransitionId>, Option<(Rank, usize)>) {
+    ) -> (Vec<usize>, Vec<bool>, Option<(Rank, usize)>) {
         let mut ids = Vec::default();
+        let mut forced = Vec::default();
         let mut chain = self;
 
         while let Some(data) = chain.data.as_ref() {
             ids.push(data.last_transition_id);
+            forced.push(data.last_transition_forced);
 
             if chain.parent_rank.get().is_some() {
                 break;
@@ -71,6 +55,7 @@ impl DistributedTransitionIdChain {
 
         (
             ids,
+            forced,
             chain
                 .parent_rank
                 .get()
@@ -118,12 +103,16 @@ impl DistributedTransitionIdChain {
         buffer[offset..offset + size].copy_from_slice(bytes);
         offset += size;
 
-        let bytes = data.last_transition_id.0.as_bytes();
+        let bytes = data.last_transition_id.as_bytes();
         let size = bytes.len();
         buffer[offset..offset + size].copy_from_slice(bytes);
         offset += size;
 
-        let last_forced = if data.last_transition_id.1 { 1u8 } else { 0u8 };
+        let last_forced = if data.last_transition_forced {
+            1u8
+        } else {
+            0u8
+        };
         let bytes = last_forced.as_bytes();
         let size = bytes.len();
         buffer[offset..offset + size].copy_from_slice(bytes);
@@ -153,7 +142,8 @@ impl DistributedTransitionIdChain {
             parent_rank: Cell::new(Some(parent_rank)),
             data: Some(DistributedTransitionIdChainData {
                 parent_chain_id,
-                last_transition_id: TransitionId(last_transition_id, last_forced),
+                last_transition_id,
+                last_transition_forced: last_forced,
             }),
         }
     }
@@ -180,7 +170,7 @@ mod tests {
     fn test_generate_successor() {
         let chain = DistributedTransitionIdChain::default();
         chain.id.set(Some(0));
-        let successor = chain.generate_successor(TransitionId(0, false));
+        let successor = chain.generate_successor(0, false);
 
         assert_eq!(successor.id.get(), None);
         assert_eq!(successor.parent_rank.get(), None);
@@ -188,7 +178,8 @@ mod tests {
             successor.data,
             Some(DistributedTransitionIdChainData {
                 parent_chain_id: 0,
-                last_transition_id: TransitionId(0, false),
+                last_transition_id: 0,
+                last_transition_forced: false
             })
         );
     }
@@ -200,21 +191,20 @@ mod tests {
 
         let mut id_to_chain_node = vec![];
 
-        let successor = Rc::new(chain.generate_successor(TransitionId(0, false)));
+        let successor = Rc::new(chain.generate_successor(0, false));
         successor.parent_rank.set(Some(0));
         successor.id.set(Some(0));
         id_to_chain_node.push(successor.clone());
 
-        let successor = Rc::new(successor.generate_successor(TransitionId(1, true)));
+        let successor = Rc::new(successor.generate_successor(1, true));
         successor.id.set(Some(1));
         id_to_chain_node.push(successor.clone());
 
-        let (transition_ids, parent) = successor.get_transition_ids_in_this_rank(&id_to_chain_node);
+        let (transition_ids, transition_forced, parent) =
+            successor.get_transition_ids_in_this_rank(&id_to_chain_node);
 
-        assert_eq!(
-            transition_ids,
-            vec![TransitionId(1, true), TransitionId(0, false)]
-        );
+        assert_eq!(transition_ids, vec![1, 0]);
+        assert_eq!(transition_forced, vec![true, false]);
         assert_eq!(parent, Some((0, 0)));
     }
 
@@ -222,7 +212,7 @@ mod tests {
     fn test_serialize_deserialize() {
         let chain = DistributedTransitionIdChain::default();
         chain.id.set(Some(0));
-        let successor = chain.generate_successor(TransitionId(0, false));
+        let successor = chain.generate_successor(0, false);
         successor.parent_rank.set(Some(1));
 
         let mut buffer = vec![0u8; DistributedTransitionIdChain::get_total_size()];

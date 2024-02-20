@@ -32,6 +32,8 @@ where
     node_communicator: TimeStampedNodeCommunicator<'a, SimpleCommunicator, M, T>,
     open: BinaryHeap<Rc<N>>,
     time_keeper: TimeKeeper,
+    is_time_out: bool,
+    n_remaining_time_out_ack: usize,
     is_checking_termination: bool,
     is_terminated: bool,
 }
@@ -51,9 +53,11 @@ where
     TransitionWithId<V>: Clone,
 {
     const TAG_NODE: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET;
+    const TAG_TIME_OUT: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 1;
+    const TAG_TIME_OUT_ACK: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 2;
     const TAG_TERMINATION_DETECTION: Tag =
-        MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 1;
-    const TAG_TERMINATE: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 2;
+        MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 3;
+    const TAG_TERMINATE: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 4;
 
     /// Creates a new HDACPS solver.
     pub fn new(
@@ -101,6 +105,8 @@ where
             node_communicator,
             open,
             time_keeper,
+            is_time_out: false,
+            n_remaining_time_out_ack: 0,
             is_checking_termination: false,
             is_terminated: false,
         }
@@ -122,13 +128,38 @@ where
         }
     }
 
+    fn broadcast_time_out(&mut self) {
+        for destination_rank in 0..self.communicator.size() {
+            if destination_rank != self.communicator.rank() {
+                let buffer: [u8; 0] = [];
+                let destination_process = self.communicator.process_at_rank(destination_rank);
+                destination_process.buffered_send_with_tag(&buffer, Self::TAG_TIME_OUT);
+                self.n_remaining_time_out_ack += 1;
+            }
+        }
+    }
+
+    fn receive_time_out(&mut self, source_rank: Rank) {
+        let mut buffer: [u8; 0] = [];
+        let source_process = self.communicator.process_at_rank(source_rank);
+        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TIME_OUT);
+        self.is_time_out = true;
+        source_process.buffered_send_with_tag(&buffer, Self::TAG_TIME_OUT_ACK);
+    }
+
+    fn receive_time_out_ack(&mut self, source_rank: Rank) {
+        let mut buffer: [u8; 0] = [];
+        let source_process = self.communicator.process_at_rank(source_rank);
+        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TIME_OUT_ACK);
+        self.n_remaining_time_out_ack -= 1;
+    }
+
     fn broadcast_terminate(&mut self) {
         for destination_rank in 0..self.communicator.size() {
             if destination_rank != self.communicator.rank() {
                 let buffer: [u8; 0] = [];
-                self.communicator
-                    .process_at_rank(destination_rank)
-                    .buffered_send_with_tag(&buffer, Self::TAG_TERMINATE);
+                let destination_process = self.communicator.process_at_rank(destination_rank);
+                destination_process.buffered_send_with_tag(&buffer, Self::TAG_TERMINATE);
             }
         }
 
@@ -137,15 +168,16 @@ where
 
     fn receive_terminate(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
-        self.communicator
-            .process_at_rank(source_rank)
-            .receive_into_with_tag(&mut buffer, Self::TAG_TERMINATE);
+        let source_process = self.communicator.process_at_rank(source_rank);
+        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TERMINATE);
         self.is_terminated = true;
     }
 
     fn receive_termination_detection(&mut self, source_rank: Rank) {
         let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
-        let local_invalid = self.search.cannot_terminate() || !self.open.is_empty();
+        let local_invalid = self.search.cannot_terminate()
+            || self.n_remaining_time_out_ack > 0
+            || (!self.is_time_out && !self.open.is_empty());
         let result = self
             .node_communicator
             .receive_termination_detection_and_forward(
@@ -172,6 +204,8 @@ where
 
             match tag {
                 Self::TAG_NODE => self.receive_node(source_rank),
+                Self::TAG_TIME_OUT => self.receive_time_out(source_rank),
+                Self::TAG_TIME_OUT_ACK => self.receive_time_out_ack(source_rank),
                 Self::TAG_TERMINATION_DETECTION => self.receive_termination_detection(source_rank),
                 Self::TAG_TERMINATE => self.receive_terminate(source_rank),
                 _ => self.search.receive_message(source_rank, tag),
@@ -182,8 +216,6 @@ where
     pub fn search(mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
         self.time_keeper.start();
 
-        let mut time_out = false;
-
         loop {
             self.process_message();
 
@@ -191,13 +223,26 @@ where
                 break;
             }
 
-            if self.communicator.rank() == self.search.get_root_rank()
-                && self.time_keeper.check_time_limit(self.search.is_quiet())
-            {
-                time_out = true;
-                self.broadcast_terminate();
-                self.is_terminated = true;
-                break;
+            if self.communicator.rank() == self.search.get_root_rank() {
+                if !self.is_time_out && self.time_keeper.check_time_limit(self.search.is_quiet()) {
+                    self.is_time_out = true;
+                    self.broadcast_time_out();
+                }
+
+                if self.is_time_out
+                    && self.n_remaining_time_out_ack == 0
+                    && !self.is_checking_termination
+                {
+                    self.is_checking_termination = true;
+                    let destination_rank =
+                        (self.communicator.rank() + 1) % self.communicator.size();
+                    self.node_communicator
+                        .initiate_termination(destination_rank);
+                }
+            }
+
+            if self.is_time_out {
+                continue;
             }
 
             if let Some(node) = self.open.pop() {
@@ -224,7 +269,9 @@ where
                 };
 
                 self.search.expand(node, local_callback, send_callback);
-            } else if !self.is_checking_termination {
+            } else if self.communicator.rank() == self.search.get_root_rank()
+                && !self.is_checking_termination
+            {
                 self.is_checking_termination = true;
                 let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
                 self.node_communicator
@@ -232,9 +279,10 @@ where
             }
         }
 
-        let (mut solution, statistics) = self.search.finalize(None);
+        let dual_bound = self.open.peek().and_then(|node| node.bound(&self.model));
+        let (mut solution, statistics) = self.search.finalize(dual_bound);
 
-        if time_out {
+        if self.is_time_out {
             solution.time_out = true;
             solution.is_optimal = false;
             solution.is_infeasible = false;
