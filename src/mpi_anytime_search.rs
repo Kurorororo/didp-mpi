@@ -13,6 +13,8 @@ use mpi::datatype::SystemDatatype;
 use mpi::{datatype::UserDatatype, topology::SimpleCommunicator, Rank, Tag};
 use mpi::{traits::*, Address};
 use std::fmt::{Debug, Display};
+use std::fs::{File, OpenOptions};
+use std::io::Write;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::str::FromStr;
@@ -201,6 +203,7 @@ where
 {
     pub controller_rank: Rank,
     pub solution_filename: Option<String>,
+    pub history_filename: Option<String>,
     pub parameters: Parameters<T>,
 }
 
@@ -228,6 +231,7 @@ where
     n_primal_bound_ack_remaining: usize,
     n_solution_ack_remaining: usize,
     solution_filename: Option<String>,
+    history_file: Option<File>,
     quiet: bool,
 }
 
@@ -280,8 +284,18 @@ where
             .collect();
         let root_rank = parameters.controller_rank;
         let solution_filename = parameters.solution_filename;
+        let history_filename = parameters.history_filename;
         let primal_bound = parameters.parameters.primal_bound;
         let quiet = parameters.parameters.quiet;
+
+        let history_file = history_filename.map(|filename| {
+            OpenOptions::new()
+                .create(true)
+                .write(true)
+                .truncate(true)
+                .open(filename)
+                .unwrap()
+        });
 
         Self {
             model,
@@ -303,6 +317,7 @@ where
             n_primal_bound_ack_remaining: 0,
             n_solution_ack_remaining: 0,
             solution_filename,
+            history_file,
             quiet,
         }
     }
@@ -378,6 +393,11 @@ where
 
         if let Some(filename) = self.solution_filename.as_ref() {
             write_solution(&self.solution, filename);
+        }
+
+        if let Some(file) = self.history_file.as_mut() {
+            let line = format!("{}, {}\n", self.solution.time, self.solution.cost.unwrap());
+            file.write_all(line.as_bytes()).unwrap();
         }
     }
 

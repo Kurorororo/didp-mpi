@@ -78,11 +78,17 @@ fn main_with_cost_type_and_hash_function<T, H>(
     } else {
         None
     };
+    let history_filename = if communicator.rank() == 0 {
+        Some(String::from("history.csv"))
+    } else {
+        None
+    };
 
     parameters.quiet |= communicator.rank() != 0;
     let parameters = MpiAnytimeSearchParameters {
         controller_rank: 0,
         solution_filename,
+        history_filename,
         parameters,
     };
 
