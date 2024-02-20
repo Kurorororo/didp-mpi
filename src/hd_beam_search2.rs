@@ -688,6 +688,10 @@ where
 
                         if source_to_counter[source_rank] == 0 {
                             received_all += 1;
+
+                            if received_all == n_ranks - 1 {
+                                break;
+                            }
                         }
                     }
                 }
