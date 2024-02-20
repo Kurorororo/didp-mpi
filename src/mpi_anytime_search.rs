@@ -394,11 +394,6 @@ where
         if let Some(filename) = self.solution_filename.as_ref() {
             write_solution(&self.solution, filename);
         }
-
-        if let Some(file) = self.history_file.as_mut() {
-            let line = format!("{}, {}\n", self.solution.time, self.solution.cost.unwrap());
-            file.write_all(line.as_bytes()).unwrap();
-        }
     }
 
     fn send_solution(&mut self) {
@@ -478,6 +473,11 @@ where
             if !self.quiet {
                 println!("New primal bound: {}", primal_bound,);
             }
+
+            if let Some(file) = self.history_file.as_mut() {
+                let line = format!("{}, {}\n", self.solution.time, self.solution.cost.unwrap());
+                file.write_all(line.as_bytes()).unwrap();
+            }
         }
     }
 
@@ -497,6 +497,11 @@ where
 
             if !self.quiet {
                 println!("New primal bound: {}", primal_bound);
+            }
+
+            if let Some(file) = self.history_file.as_mut() {
+                let line = format!("{}, {}\n", self.solution.time, self.solution.cost.unwrap());
+                file.write_all(line.as_bytes()).unwrap();
             }
         }
 

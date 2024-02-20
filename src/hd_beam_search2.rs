@@ -479,6 +479,10 @@ where
                                 }
                             }
                         }
+
+                        if opened == n_ranks - 1 {
+                            break;
+                        }
                     }
                 }
 
@@ -662,9 +666,15 @@ where
                             if status.is_newly_registered {
                                 generated += 1;
                             }
+
+                            if received_all == n_ranks - 1 {
+                                break;
+                            }
                         }
                     }
+                }
 
+                if received_all < n_ranks - 1 {
                     // Receives a special message.
                     while let Some(status) =
                         any_process.immediate_probe_with_tag(TAG_ALL_NODES_SENT)

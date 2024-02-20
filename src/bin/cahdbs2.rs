@@ -104,11 +104,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         if goal_rank == Some(communicator.rank()) && solution.cost.is_some() {
             write_solution(&solution, "solution.yaml");
 
-            let mut file = OpenOptions::new()
-                .write(true)
-                .append(true)
-                .open("history.csv")
-                .unwrap();
+            let mut file = OpenOptions::new().append(true).open("history.csv").unwrap();
             let line = format!(
                 "{}, {}, {}, {}\n",
                 solution.time, cost, solution.expanded, solution.generated
