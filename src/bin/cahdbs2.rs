@@ -107,7 +107,10 @@ fn main_with_cost_type_and_hash_function<T, H>(
             let mut file = OpenOptions::new().append(true).open("history.csv").unwrap();
             let line = format!(
                 "{}, {}, {}, {}\n",
-                solution.time, cost, solution.expanded, solution.generated
+                solution.time,
+                solution.cost.unwrap(),
+                solution.expanded,
+                solution.generated
             );
             file.write_all(line.as_bytes()).unwrap();
         }
