@@ -626,15 +626,13 @@ where
                     while let Some(status) = any_process.immediate_probe_with_tag(TAG_NODE) {
                         let source_rank = status.source_rank();
                         received += 1;
+                        source_to_counter[source_rank as usize] += 1;
+
+                        if source_to_counter[source_rank as usize] == 0 {
+                            received_all += 1;
+                        }
 
                         if let Some(node) = node_communicator.receive(source_rank, primal_bound) {
-                            let source_rank = source_rank as usize;
-                            source_to_counter[source_rank] += 1;
-
-                            if source_to_counter[source_rank] == 0 {
-                                received_all += 1;
-                            }
-
                             let node = N::from(node);
                             let node_bound = node.bound(model);
                             let status = next_beam.insert(&mut registry, node);
@@ -666,10 +664,10 @@ where
                             if status.is_newly_registered {
                                 generated += 1;
                             }
+                        }
 
-                            if received_all == n_ranks - 1 {
-                                break;
-                            }
+                        if received_all == n_ranks - 1 {
+                            break;
                         }
                     }
                 }
