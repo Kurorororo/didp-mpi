@@ -552,6 +552,7 @@ where
                 self.broadcast_primal_bound();
 
                 self.reverse_transition_ids.clear();
+                self.reverse_transition_forced.clear();
                 self.reverse_transition_ids
                     .extend(suffix.iter().rev().map(|t| t.id));
                 self.reverse_transition_forced
