@@ -4,7 +4,6 @@ use dypdl::variable_type::Numeric;
 use dypdl_heuristic_search::search_algorithm::data_structure::{
     exceed_bound, HashableSignatureVariables,
 };
-use dypdl_heuristic_search::search_algorithm::util::TimeKeeper;
 use dypdl_heuristic_search::search_algorithm::{SearchInput, Solution, TransitionWithId};
 use mpi::traits::*;
 use mpi::{topology::SimpleCommunicator, Rank, Tag};
@@ -31,7 +30,6 @@ where
     communicator: &'a SimpleCommunicator,
     node_communicator: TimeStampedNodeCommunicator<'a, SimpleCommunicator, M, T>,
     open: BinaryHeap<Rc<N>>,
-    time_keeper: TimeKeeper,
     is_time_out: bool,
     n_remaining_time_out_ack: usize,
     is_checking_termination: bool,
@@ -68,17 +66,7 @@ where
         hash_function: F,
         communicator: &'a SimpleCommunicator,
     ) -> HdBestFirstSearch<'a, T, N, M, E, B, F, V> {
-        let mut time_keeper = parameters
-            .parameters
-            .time_limit
-            .map_or_else(TimeKeeper::default, TimeKeeper::with_time_limit);
         let model = input.generator.model.clone();
-        let node_communicator = TimeStampedNodeCommunicator::new(
-            communicator,
-            Self::TAG_NODE,
-            Self::TAG_TERMINATION_DETECTION,
-            model.clone(),
-        );
 
         let mut search = MpiAnytimeSearch::new(
             input.generator,
@@ -90,13 +78,18 @@ where
             communicator,
         );
 
+        let node_communicator = TimeStampedNodeCommunicator::new(
+            communicator,
+            Self::TAG_NODE,
+            Self::TAG_TERMINATION_DETECTION,
+            model.clone(),
+        );
+
         let mut open = BinaryHeap::new();
 
         search.generate_root_node(input.node, |node| {
             open.push(node);
         });
-
-        time_keeper.stop();
 
         Self {
             model,
@@ -104,7 +97,6 @@ where
             communicator,
             node_communicator,
             open,
-            time_keeper,
             is_time_out: false,
             n_remaining_time_out_ack: 0,
             is_checking_termination: false,
@@ -214,8 +206,6 @@ where
     }
 
     pub fn search(mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
-        self.time_keeper.start();
-
         loop {
             self.process_message();
 
@@ -224,7 +214,7 @@ where
             }
 
             if self.communicator.rank() == self.search.get_root_rank() {
-                if !self.is_time_out && self.time_keeper.check_time_limit(self.search.is_quiet()) {
+                if !self.is_time_out && self.search.check_time_limit() {
                     self.is_time_out = true;
                     self.broadcast_time_out();
                 }
@@ -295,7 +285,7 @@ where
             }
         }
 
-        solution.time = self.time_keeper.elapsed_time();
+        solution.time = self.search.elapsed_time();
 
         (solution, statistics)
     }

@@ -4,6 +4,7 @@ use dypdl::variable_type::Numeric;
 use dypdl_heuristic_search::search_algorithm::data_structure::{
     exceed_bound, HashableSignatureVariables,
 };
+use dypdl_heuristic_search::search_algorithm::util::TimeKeeper;
 use dypdl_heuristic_search::search_algorithm::{
     Solution, StateRegistry, SuccessorGenerator, TransitionWithId,
 };
@@ -233,6 +234,7 @@ where
     solution_filename: Option<String>,
     history_file: Option<File>,
     quiet: bool,
+    time_keeper: TimeKeeper,
 }
 
 impl<'a, T, B, V> MpiSolutionManager<'a, T, B, V>
@@ -271,6 +273,11 @@ where
         parameters: MpiAnytimeSearchParameters<T>,
         communicator: &'a SimpleCommunicator,
     ) -> Self {
+        let time_keeper = parameters
+            .parameters
+            .time_limit
+            .map_or_else(TimeKeeper::default, TimeKeeper::with_time_limit);
+
         let model = generator.model.clone();
         let forced_transitions = generator
             .forced_transitions
@@ -319,7 +326,16 @@ where
             solution_filename,
             history_file,
             quiet,
+            time_keeper,
         }
+    }
+
+    pub fn elapsed_time(&self) -> f64 {
+        self.time_keeper.elapsed_time()
+    }
+
+    pub fn check_time_limit(&self) -> bool {
+        self.time_keeper.check_time_limit(self.quiet)
     }
 
     pub fn get_root_rank(&self) -> Rank {
@@ -335,10 +351,6 @@ where
             || self.n_partial_solution_remaining > 0
             || self.n_primal_bound_ack_remaining > 0
             || self.n_solution_ack_remaining > 0
-    }
-
-    pub fn is_quiet(&self) -> bool {
-        self.quiet
     }
 
     pub fn increment_expanded(&mut self) {
@@ -390,6 +402,7 @@ where
                     }
                 }),
         );
+        self.solution.time = self.time_keeper.elapsed_time();
 
         if let Some(filename) = self.solution_filename.as_ref() {
             write_solution(&self.solution, filename);
@@ -740,6 +753,8 @@ where
             }
 
             if self.solution.cost.is_some() {
+                self.solution.time = self.time_keeper.elapsed_time();
+
                 if let Some(filename) = self.solution_filename.as_ref() {
                     write_solution(&self.solution, filename);
                 }
@@ -835,12 +850,7 @@ where
         hash_function: F,
         communicator: &'a SimpleCommunicator,
     ) -> Self {
-        let mut registry = StateRegistry::<_, _>::new(generator.model.clone());
-
-        if let Some(capacity) = parameters.parameters.initial_registry_capacity {
-            registry.reserve(capacity);
-        }
-
+        let capacity = parameters.parameters.initial_registry_capacity;
         let solution_manager = MpiSolutionManager::new(
             &generator,
             suffix,
@@ -848,6 +858,12 @@ where
             parameters,
             communicator,
         );
+
+        let mut registry = StateRegistry::<_, _>::new(generator.model.clone());
+
+        if let Some(capacity) = capacity {
+            registry.reserve(capacity);
+        }
 
         Self {
             communicator,
@@ -861,12 +877,16 @@ where
         }
     }
 
-    pub fn get_root_rank(&self) -> Rank {
-        self.solution_manager.get_root_rank()
+    pub fn elapsed_time(&self) -> f64 {
+        self.solution_manager.elapsed_time()
     }
 
-    pub fn is_quiet(&self) -> bool {
-        self.solution_manager.is_quiet()
+    pub fn check_time_limit(&self) -> bool {
+        self.solution_manager.check_time_limit()
+    }
+
+    pub fn get_root_rank(&self) -> Rank {
+        self.solution_manager.get_root_rank()
     }
 
     pub fn get_primal_bound(&self) -> Option<T> {
