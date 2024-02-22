@@ -489,7 +489,11 @@ where
             }
 
             if !self.quiet {
-                println!("New primal bound: {}", primal_bound,);
+                println!(
+                    "New primal bound: {}, elapsed time: {}",
+                    primal_bound,
+                    self.elapsed_time()
+                );
             }
         }
     }
@@ -509,7 +513,11 @@ where
             self.primal_bound = Some(primal_bound);
 
             if !self.quiet {
-                println!("New primal bound: {}", primal_bound);
+                println!(
+                    "New primal bound: {}, elapsed time: {}",
+                    primal_bound,
+                    self.elapsed_time()
+                );
             }
         }
 
