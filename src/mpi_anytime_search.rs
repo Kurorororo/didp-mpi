@@ -416,7 +416,7 @@ where
 
     fn send_solution(&mut self) {
         let n = self.reverse_transition_ids.len();
-        let cost = self.primal_bound.unwrap();
+        let cost = self.solution.cost.unwrap();
         let message = NTransitionIdsAndCost {
             n_transitions: n,
             cost,
@@ -451,6 +451,13 @@ where
         if !exceed_bound(&self.model, cost, self.solution.cost) {
             self.solution.cost = Some(cost);
             self.update_solution_transitions(&tmp_transition_ids, &tmp_transition_forced);
+
+            if !self.quiet {
+                println!(
+                    "Received solution from rank: {}, cost: {}",
+                    source_rank, cost
+                );
+            }
         }
 
         let buffer: [u8; 0] = [];
@@ -490,9 +497,10 @@ where
 
             if !self.quiet {
                 println!(
-                    "New primal bound: {}, elapsed time: {}",
+                    "New primal bound: {}, elapsed time: {} (discovered by rank {})",
                     primal_bound,
-                    self.elapsed_time()
+                    self.elapsed_time(),
+                    self.communicator.rank(),
                 );
             }
         }
@@ -514,9 +522,10 @@ where
 
             if !self.quiet {
                 println!(
-                    "New primal bound: {}, elapsed time: {}",
+                    "New primal bound: {}, elapsed time: {} (received from rank {})",
                     primal_bound,
-                    self.elapsed_time()
+                    self.elapsed_time(),
+                    source_rank,
                 );
             }
         }
@@ -562,10 +571,10 @@ where
                     chain.get_transition_ids_in_this_rank(id_to_chain_node);
                 self.reverse_transition_ids.extend(additional_ids);
                 self.reverse_transition_forced.extend(additional_forced);
+                self.partial_solution_timestamp += 1;
 
                 if let Some((parent_rank, parent_id)) = parent {
                     self.is_retrieving_partial_solution = true;
-                    self.partial_solution_timestamp += 1;
                     let buffer = [parent_id, self.partial_solution_timestamp];
                     let destination_process = self.communicator.process_at_rank(parent_rank);
                     destination_process

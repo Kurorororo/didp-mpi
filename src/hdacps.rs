@@ -293,6 +293,8 @@ where
                 if self.communicator.rank() == self.search.get_root_rank()
                     && no_node
                     && !self.is_checking_termination
+                    && !self.search.cannot_terminate()
+                    && self.n_remaining_time_out_ack == 0
                 {
                     self.is_checking_termination = true;
                     let destination_rank =
