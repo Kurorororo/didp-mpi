@@ -83,9 +83,10 @@ where
         let invalid = message.2 || local_invalid;
 
         println!(
-            "Rank {} received message {:?}, invalid: {}",
+            "Rank {} received message {:?}, count: {}, invalid: {}",
             self.communicator.rank(),
             message,
+            self.count,
             local_invalid
         );
 
