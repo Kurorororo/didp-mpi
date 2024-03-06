@@ -11,7 +11,7 @@ pub struct MpiTerminationDetector<'a, C> {
     count: i32,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct TerminationDetectionkMessage(usize, i32, bool, Rank);
 
 unsafe impl Equivalence for TerminationDetectionkMessage {
@@ -81,6 +81,13 @@ where
 
         self.clock = max(message.0, self.clock);
         let invalid = message.2 || local_invalid;
+
+        println!(
+            "Rank {} received message {:?}, invalid: {}",
+            self.communicator.rank(),
+            message,
+            local_invalid
+        );
 
         if self.communicator.rank() == message.3 {
             Some(message.1 == 0 && !invalid)
