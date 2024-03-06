@@ -56,7 +56,7 @@ where
     }
 
     pub fn notify_received(&mut self, tstamp: usize) {
-        self.clock = max(tstamp, self.clock);
+        self.tmax = max(tstamp, self.tmax);
         self.count -= 1;
     }
 
@@ -81,14 +81,6 @@ where
 
         self.clock = max(message.0, self.clock);
         let invalid = message.2 || local_invalid;
-
-        println!(
-            "Rank {} received message {:?}, count: {}, invalid: {}",
-            self.communicator.rank(),
-            message,
-            self.count,
-            local_invalid
-        );
 
         if self.communicator.rank() == message.3 {
             Some(message.1 == 0 && !invalid)
