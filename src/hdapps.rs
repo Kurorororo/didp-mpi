@@ -299,10 +299,12 @@ where
                 self.current_depth = current_depth;
             } else if !self.open.is_empty() {
                 self.current_depth += 1;
-            } else if self.communicator.rank() == self.search.get_root_rank()
+            }
+
+            if self.communicator.rank() == self.search.get_root_rank()
+                && self.open.is_empty()
                 && !self.is_checking_termination
                 && !self.search.cannot_terminate()
-                && self.n_remaining_time_out_ack == 0
             {
                 self.is_checking_termination = true;
                 let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();

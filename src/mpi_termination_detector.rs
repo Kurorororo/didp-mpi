@@ -11,7 +11,7 @@ pub struct MpiTerminationDetector<'a, C> {
     count: i32,
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 struct TerminationDetectionkMessage(usize, i32, bool, Rank);
 
 unsafe impl Equivalence for TerminationDetectionkMessage {
@@ -56,7 +56,7 @@ where
     }
 
     pub fn notify_received(&mut self, tstamp: usize) {
-        self.clock = max(tstamp, self.clock);
+        self.tmax = max(tstamp, self.tmax);
         self.count -= 1;
     }
 
