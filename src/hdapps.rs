@@ -8,7 +8,6 @@ use dypdl_heuristic_search::search_algorithm::{SearchInput, Solution, Transition
 use dypdl_heuristic_search::ProgressiveSearchParameters;
 use mpi::traits::*;
 use mpi::{topology::SimpleCommunicator, Rank, Tag};
-use std::cmp;
 use std::collections::BinaryHeap;
 use std::fmt::{Debug, Display};
 use std::rc::Rc;
@@ -17,7 +16,7 @@ use std::str::FromStr;
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
 use crate::is_float::IsFloat;
 use crate::mpi_anytime_search::{MpiAnytimeSearch, MpiAnytimeSearchParameters};
-use crate::node_communicator::TimeStampedNodeDepthCommunicator;
+use crate::node_communicator::TimeStampedNodeCommunicator;
 use crate::node_data_type::NodeDatatype;
 use crate::statistics::Statistics;
 
@@ -30,13 +29,12 @@ where
     model: Rc<Model>,
     search: MpiAnytimeSearch<'a, T, N, M, E, B, F, V>,
     communicator: &'a SimpleCommunicator,
-    node_communicator: TimeStampedNodeDepthCommunicator<'a, SimpleCommunicator, M, T>,
+    node_communicator: TimeStampedNodeCommunicator<'a, SimpleCommunicator, M, T>,
     progressive_parameters: ProgressiveSearchParameters,
     width: usize,
-    open: BinaryHeap<(Rc<N>, usize)>,
-    children: BinaryHeap<(Rc<N>, usize)>,
-    suspend: BinaryHeap<(Rc<N>, usize)>,
-    current_depth: usize,
+    open: BinaryHeap<Rc<N>>,
+    children: BinaryHeap<Rc<N>>,
+    suspend: BinaryHeap<Rc<N>>,
     is_time_out: bool,
     n_remaining_time_out_ack: usize,
     is_checking_termination: bool,
@@ -85,7 +83,7 @@ where
             communicator,
         );
 
-        let node_communicator = TimeStampedNodeDepthCommunicator::new(
+        let node_communicator = TimeStampedNodeCommunicator::new(
             communicator,
             Self::TAG_NODE,
             Self::TAG_TERMINATION_DETECTION,
@@ -97,7 +95,7 @@ where
         let suspend = BinaryHeap::new();
 
         search.generate_root_node(input.node, |node| {
-            children.push((node, 0));
+            children.push(node);
         });
 
         Self {
@@ -110,7 +108,6 @@ where
             open,
             children,
             suspend,
-            current_depth: 0,
             is_time_out: false,
             n_remaining_time_out_ack: 0,
             is_checking_termination: false,
@@ -121,16 +118,12 @@ where
     fn receive_node(&mut self, source_rank: Rank) {
         self.search.increment_received();
 
-        if let Some((node, depth)) = self
+        if let Some(node) = self
             .node_communicator
             .receive(source_rank, self.search.get_primal_bound())
         {
             let callback = |node| {
-                if depth < self.current_depth {
-                    self.suspend.push((node, depth));
-                } else {
-                    self.children.push((node, depth));
-                }
+                self.children.push(node);
             };
 
             let node = N::from(node);
@@ -244,7 +237,7 @@ where
                 break 'outer;
             }
 
-            while let Some((node, depth)) = self.children.pop() {
+            while let Some(node) = self.children.pop() {
                 if node.is_closed() {
                     continue;
                 }
@@ -260,9 +253,9 @@ where
                 }
 
                 if self.open.len() < self.width {
-                    self.open.push((node, depth));
+                    self.open.push(node);
                 } else {
-                    self.suspend.push((node, depth));
+                    self.suspend.push(node);
                 }
             }
 
@@ -273,10 +266,8 @@ where
                     self.width = self.progressive_parameters.increase_width(self.width);
                 }
 
-                let mut current_depth = usize::MAX;
-
                 while self.open.len() < self.width {
-                    if let Some((node, depth)) = self.suspend.pop() {
+                    if let Some(node) = self.suspend.pop() {
                         if node.is_closed() {
                             continue;
                         }
@@ -288,17 +279,13 @@ where
                                 continue;
                             }
                         }
-                        current_depth = cmp::min(depth, current_depth);
-                        self.open.push((node, depth));
+                        self.open.push(node);
                     } else {
                         break;
                     }
                 }
 
                 goal_found = false;
-                self.current_depth = current_depth;
-            } else if !self.open.is_empty() {
-                self.current_depth += 1;
             }
 
             if self.communicator.rank() == self.search.get_root_rank()
@@ -327,7 +314,7 @@ where
                     break 'outer;
                 }
 
-                let (node, depth) = self.open.pop().unwrap();
+                let node = self.open.pop().unwrap();
 
                 if node.is_closed() {
                     continue;
@@ -344,12 +331,11 @@ where
                 }
 
                 let local_callback = |successor| {
-                    self.children.push((successor, depth + 1));
+                    self.children.push(successor);
                 };
 
                 let send_callback = |destination_rank, successor| {
-                    self.node_communicator
-                        .send(destination_rank, &successor, depth + 1);
+                    self.node_communicator.send(destination_rank, &successor);
                 };
 
                 goal_found |= self.search.expand(node, local_callback, send_callback);
@@ -377,9 +363,9 @@ where
             }
         }
 
-        let open_best = self.open.peek().and_then(|(n, _)| n.bound(&self.model));
-        let children_best = self.children.peek().and_then(|(n, _)| n.bound(&self.model));
-        let suspend_best = self.suspend.peek().and_then(|(n, _)| n.bound(&self.model));
+        let open_best = self.open.peek().and_then(|n| n.bound(&self.model));
+        let children_best = self.children.peek().and_then(|n| n.bound(&self.model));
+        let suspend_best = self.suspend.peek().and_then(|n| n.bound(&self.model));
         let dual_bound_array = [open_best, children_best, suspend_best];
         let dual_bound_iter = dual_bound_array.iter().filter_map(|x| *x);
 
