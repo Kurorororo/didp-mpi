@@ -389,6 +389,8 @@ where
             dual_bound_iter.min()
         };
 
+        self.communicator.barrier();
+
         let (mut solution, statistics) = self.search.finalize(dual_bound);
 
         if self.is_time_out {

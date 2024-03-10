@@ -270,6 +270,9 @@ where
         }
 
         let dual_bound = self.open.peek().and_then(|node| node.bound(&self.model));
+
+        self.communicator.barrier();
+
         let (mut solution, statistics) = self.search.finalize(dual_bound);
 
         if self.is_time_out {
