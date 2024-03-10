@@ -749,6 +749,9 @@ where
                 }
             }
 
+            // Wait for the other ranks to finish.
+            communicator.barrier();
+
             return (solution, goal_rank, statistics);
         }
 
