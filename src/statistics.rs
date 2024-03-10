@@ -1,8 +1,6 @@
 use std::ops::{Add, AddAssign};
 
-use mpi::collective::SystemOperation;
-use mpi::traits::*;
-use mpi::{Rank, Tag};
+use mpi::{collective::SystemOperation, traits::*, Rank, Tag};
 use serde::Serialize;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]

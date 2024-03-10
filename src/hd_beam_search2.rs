@@ -1,17 +1,16 @@
-use dypdl::prelude::*;
-use dypdl::variable_type::Numeric;
-use dypdl_heuristic_search::search_algorithm::data_structure::{
-    exceed_bound, Beam, HashableSignatureVariables,
-};
-use dypdl_heuristic_search::search_algorithm::util::TimeKeeper;
+use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::search_algorithm::{
-    get_solution_cost_and_suffix, BeamSearchParameters, SearchInput, Solution, StateRegistry,
-    TransitionWithId,
+    self,
+    data_structure::{self, Beam, HashableSignatureVariables},
+    util::TimeKeeper,
+    BeamSearchParameters, SearchInput, Solution, StateRegistry, TransitionWithId,
 };
-use memoffset::offset_of;
-use mpi::datatype::SystemDatatype;
-use mpi::{datatype::UserDatatype, topology::SimpleCommunicator, Rank, Tag};
-use mpi::{traits::*, Address};
+use mpi::{
+    datatype::{SystemDatatype, UserDatatype},
+    topology::SimpleCommunicator,
+    traits::*,
+    Address, Rank, Tag,
+};
 use std::fmt::Display;
 use std::mem;
 use std::rc::Rc;
@@ -127,8 +126,8 @@ where
         UserDatatype::structured(
             &[5, 2],
             &[
-                offset_of!(LocalLayerMessageForSend<T>, 0) as Address,
-                offset_of!(LocalLayerMessageForSend<T>, 1) as Address,
+                memoffset::offset_of!(LocalLayerMessageForSend<T>, 0) as Address,
+                memoffset::offset_of!(LocalLayerMessageForSend<T>, 1) as Address,
             ],
             &[bool::equivalent_datatype(), T::equivalent_datatype()],
         )
@@ -462,19 +461,23 @@ where
                         time_out |= information.time_out;
 
                         if let Some(bound) = information.bound {
-                            if !exceed_bound(model, bound, previous_layer_dual_bound) {
+                            if !data_structure::exceed_bound(
+                                model,
+                                bound,
+                                previous_layer_dual_bound,
+                            ) {
                                 previous_layer_dual_bound = Some(bound);
                             }
                         }
 
                         if let Some(other) = information.cost {
-                            if !exceed_bound(model, other, cost)
+                            if !data_structure::exceed_bound(model, other, cost)
                                 || (Some(other) == cost && source_rank < goal_rank.unwrap())
                             {
                                 cost = Some(other);
                                 goal_rank = Some(source_rank);
 
-                                if !exceed_bound(model, other, primal_bound) {
+                                if !data_structure::exceed_bound(model, other, primal_bound) {
                                     primal_bound = Some(other);
                                 }
                             }
@@ -488,11 +491,11 @@ where
 
                 if !best_dual_bound_checked && opened == n_ranks - 1 {
                     if let Some(value) = previous_layer_dual_bound {
-                        if exceed_bound(model, value, primal_bound) {
+                        if data_structure::exceed_bound(model, value, primal_bound) {
                             best_dual_bound = primal_bound;
-                        } else if best_dual_bound
-                            .map_or(true, |bound| !exceed_bound(model, bound, Some(value)))
-                        {
+                        } else if best_dual_bound.map_or(true, |bound| {
+                            !data_structure::exceed_bound(model, bound, Some(value))
+                        }) {
                             best_dual_bound = Some(value);
                         }
                     }
@@ -504,18 +507,18 @@ where
                     // Expands a node.
                     if let Some(node) = iter.next() {
                         if let Some(bound) = node.bound(model) {
-                            if exceed_bound(model, bound, primal_bound) {
+                            if data_structure::exceed_bound(model, bound, primal_bound) {
                                 continue;
                             }
                         }
 
-                        if let Some((cost, suffix)) = get_solution_cost_and_suffix(
+                        if let Some((cost, suffix)) = search_algorithm::get_solution_cost_and_suffix(
                             model,
                             &*node,
                             suffix,
                             &base_cost_evaluator,
                         ) {
-                            if !exceed_bound(model, cost, primal_bound) {
+                            if !data_structure::exceed_bound(model, cost, primal_bound) {
                                 primal_bound = Some(cost);
                                 incumbent = Some((node, cost, suffix));
 
@@ -556,12 +559,20 @@ where
                                     }
 
                                     if let Some(bound) = successor_bound {
-                                        if !exceed_bound(model, bound, layer_dual_bound) {
+                                        if !data_structure::exceed_bound(
+                                            model,
+                                            bound,
+                                            layer_dual_bound,
+                                        ) {
                                             layer_dual_bound = Some(bound);
                                         }
 
                                         if status.is_pruned
-                                            && !exceed_bound(model, bound, removed_dual_bound)
+                                            && !data_structure::exceed_bound(
+                                                model,
+                                                bound,
+                                                removed_dual_bound,
+                                            )
                                         {
                                             removed_dual_bound = Some(bound);
                                         }
@@ -570,7 +581,11 @@ where
                                     if let Some(bound) =
                                         status.removed.and_then(|removed| removed.bound(model))
                                     {
-                                        if !exceed_bound(model, bound, removed_dual_bound) {
+                                        if !data_structure::exceed_bound(
+                                            model,
+                                            bound,
+                                            removed_dual_bound,
+                                        ) {
                                             removed_dual_bound = Some(bound);
                                         }
                                     }
@@ -642,12 +657,16 @@ where
                             }
 
                             if let Some(bound) = node_bound {
-                                if !exceed_bound(model, bound, layer_dual_bound) {
+                                if !data_structure::exceed_bound(model, bound, layer_dual_bound) {
                                     layer_dual_bound = Some(bound);
                                 }
 
                                 if status.is_pruned
-                                    && !exceed_bound(model, bound, removed_dual_bound)
+                                    && !data_structure::exceed_bound(
+                                        model,
+                                        bound,
+                                        removed_dual_bound,
+                                    )
                                 {
                                     removed_dual_bound = Some(bound);
                                 }
@@ -656,7 +675,7 @@ where
                             if let Some(bound) =
                                 status.removed.and_then(|removed| removed.bound(model))
                             {
-                                if !exceed_bound(model, bound, removed_dual_bound) {
+                                if !data_structure::exceed_bound(model, bound, removed_dual_bound) {
                                     removed_dual_bound = Some(bound);
                                 }
                             }

@@ -1,7 +1,5 @@
-use memoffset::offset_of;
-use mpi::datatype::UserDatatype;
-use mpi::{traits::*, Address, Rank, Tag};
-use std::cmp::max;
+use mpi::{datatype::UserDatatype, traits::*, Address, Rank, Tag};
+use std::cmp;
 
 pub struct MpiTerminationDetector<'a, C> {
     communicator: &'a C,
@@ -21,10 +19,10 @@ unsafe impl Equivalence for TerminationDetectionkMessage {
         UserDatatype::structured(
             &[1, 1, 1, 1],
             &[
-                offset_of!(TerminationDetectionkMessage, 0) as Address,
-                offset_of!(TerminationDetectionkMessage, 1) as Address,
-                offset_of!(TerminationDetectionkMessage, 2) as Address,
-                offset_of!(TerminationDetectionkMessage, 3) as Address,
+                memoffset::offset_of!(TerminationDetectionkMessage, 0) as Address,
+                memoffset::offset_of!(TerminationDetectionkMessage, 1) as Address,
+                memoffset::offset_of!(TerminationDetectionkMessage, 2) as Address,
+                memoffset::offset_of!(TerminationDetectionkMessage, 3) as Address,
             ],
             &[
                 usize::equivalent_datatype(),
@@ -56,7 +54,7 @@ where
     }
 
     pub fn notify_received(&mut self, tstamp: usize) {
-        self.tmax = max(tstamp, self.tmax);
+        self.tmax = cmp::max(tstamp, self.tmax);
         self.count -= 1;
     }
 
@@ -79,7 +77,7 @@ where
         let mut message = TerminationDetectionkMessage::default();
         source.receive_into_with_tag(&mut message, self.tag);
 
-        self.clock = max(message.0, self.clock);
+        self.clock = cmp::max(message.0, self.clock);
         let invalid = message.2 || local_invalid;
 
         if self.communicator.rank() == message.3 {

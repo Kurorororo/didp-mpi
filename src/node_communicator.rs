@@ -1,6 +1,5 @@
-use dypdl::prelude::*;
-use dypdl::variable_type::Numeric;
-use dypdl_heuristic_search::search_algorithm::data_structure::exceed_bound;
+use dypdl::{prelude::*, variable_type::Numeric};
+use dypdl_heuristic_search::search_algorithm::data_structure;
 use mpi::{
     datatype::{MutView, UserDatatype, View},
     Rank, Tag,
@@ -63,7 +62,7 @@ where
         source.receive_into_with_tag(&mut v, self.tag);
 
         if let Some(bound) = M::get_bound(&self.model, &self.state_serializer, &self.tmp_buffer) {
-            if exceed_bound(&self.model, bound, primal_bound) {
+            if data_structure::exceed_bound(&self.model, bound, primal_bound) {
                 return None;
             }
         }
@@ -131,7 +130,7 @@ where
             .receive_into(&mut self.tmp_buffer, source_rank);
 
         if let Some(bound) = M::get_bound(&self.model, &self.state_serializer, &self.tmp_buffer) {
-            if exceed_bound(&self.model, bound, primal_bound) {
+            if data_structure::exceed_bound(&self.model, bound, primal_bound) {
                 return None;
             }
         }
@@ -228,7 +227,7 @@ where
             .receive_into(&mut self.tmp_buffer, source_rank);
 
         if let Some(bound) = M::get_bound(&self.model, &self.state_serializer, &self.tmp_buffer) {
-            if exceed_bound(&self.model, bound, primal_bound) {
+            if data_structure::exceed_bound(&self.model, bound, primal_bound) {
                 return None;
             }
         }

@@ -1,18 +1,20 @@
 use didp_mpi::{
-    dump_solution, hd_beam_search2, load_parameters_from_map, read_model, write_solution,
     AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType, IsFloat,
     Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
-use dypdl::prelude::*;
-use dypdl::variable_type::{Numeric, OrderedContinuous};
-use dypdl_heuristic_search::search_algorithm::data_structure::HashableSignatureVariables;
-use dypdl_heuristic_search::search_algorithm::{
-    Cabs, SearchInput, SuccessorGenerator, TransitionWithId,
+use dypdl::{
+    prelude::*,
+    variable_type::{Numeric, OrderedContinuous},
 };
-use dypdl_heuristic_search::{BeamSearchParameters, CabsParameters, FEvaluatorType, Search};
-use mpi::environment::Universe;
-use mpi::traits::*;
+use dypdl_heuristic_search::{
+    search_algorithm::{
+        data_structure::HashableSignatureVariables, Cabs, SearchInput, SuccessorGenerator,
+        TransitionWithId,
+    },
+    BeamSearchParameters, CabsParameters, FEvaluatorType, Search,
+};
+use mpi::{environment::Universe, traits::*};
 use std::fmt::{Debug, Display};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -90,7 +92,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     let mut root_rank = None;
 
     let beam_search = |input: &SearchInput<_, _>, parameters| {
-        let (solution, goal_rank, tmp_statistics) = hd_beam_search2(
+        let (solution, goal_rank, tmp_statistics) = didp_mpi::hd_beam_search2(
             input,
             &transition_evaluator,
             base_cost_evaluator,
@@ -102,7 +104,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         statistics += tmp_statistics;
 
         if goal_rank == Some(communicator.rank()) && solution.cost.is_some() {
-            write_solution(&solution, "solution.yaml");
+            didp_mpi::write_solution(&solution, "solution.yaml");
 
             let mut file = OpenOptions::new().append(true).open("history.csv").unwrap();
             let line = format!(
@@ -134,7 +136,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     if is_root {
         solution.expanded = statistics_list.iter().map(|s| s.expanded).sum();
         solution.generated = statistics_list.iter().map(|s| s.generated).sum();
-        dump_solution(&solution);
+        didp_mpi::dump_solution(&solution);
         let statistics_yaml = serde_yaml::to_string(&statistics_list).unwrap();
         fs::write("statistics.yaml", statistics_yaml).unwrap();
     }
@@ -208,7 +210,7 @@ where
     assert_eq!(config.len(), 1);
     let yaml = &config[0];
     let map = yaml.as_hash().expect("Yaml file is not a hash");
-    let parameters = load_parameters_from_map::<T>(map);
+    let parameters = didp_mpi::load_parameters_from_map::<T>(map);
     let additional_common_parameters = AdditionalCommonParameters::load_from_map(map);
 
     let beam_size = match map.get(&yaml_rust::Yaml::from_str("initial_beam_size")) {
@@ -259,7 +261,7 @@ fn main() {
 
     let mut args = std::env::args();
     args.next();
-    let model = read_model(&mut args);
+    let model = didp_mpi::read_model(&mut args);
     let config_filename = args.next().expect("Config filename is not specified");
 
     match model.cost_type {

@@ -1,16 +1,20 @@
 use didp_mpi::{
-    dump_solution, load_parameters_from_map, read_model, AdditionalCommonParameters,
-    DistributedFNode, DistributedFNodeMessage, HashType, HdAcps, IsFloat,
-    MpiAnytimeSearchParameters,
+    AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType, HdAcps,
+    IsFloat, MpiAnytimeSearchParameters,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
-use dypdl::prelude::*;
-use dypdl::variable_type::{Numeric, OrderedContinuous};
-use dypdl_heuristic_search::search_algorithm::data_structure::HashableSignatureVariables;
-use dypdl_heuristic_search::search_algorithm::{SearchInput, SuccessorGenerator, TransitionWithId};
-use dypdl_heuristic_search::{FEvaluatorType, Parameters, ProgressiveSearchParameters};
-use mpi::environment::Universe;
-use mpi::traits::*;
+use dypdl::{
+    prelude::*,
+    variable_type::{Numeric, OrderedContinuous},
+};
+use dypdl_heuristic_search::{
+    search_algorithm::{
+        data_structure::HashableSignatureVariables, SearchInput, SuccessorGenerator,
+        TransitionWithId,
+    },
+    FEvaluatorType, Parameters, ProgressiveSearchParameters,
+};
+use mpi::{environment::Universe, traits::*};
 use std::fmt::{Debug, Display};
 use std::fs;
 use std::rc::Rc;
@@ -105,7 +109,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     let (solution, statistics_list) = solver.search();
 
     if communicator.rank() == 0 {
-        dump_solution(&solution);
+        didp_mpi::dump_solution(&solution);
         let statistics_yaml = serde_yaml::to_string(&statistics_list).unwrap();
         fs::write("statistics.yaml", statistics_yaml).unwrap();
     }
@@ -189,7 +193,7 @@ where
     assert_eq!(config.len(), 1);
     let yaml = &config[0];
     let map = yaml.as_hash().expect("Yaml file is not a hash");
-    let parameters = load_parameters_from_map::<T>(map);
+    let parameters = didp_mpi::load_parameters_from_map::<T>(map);
     let additional_common_parameters = AdditionalCommonParameters::load_from_map(map);
 
     let init = match map.get(&yaml_rust::Yaml::from_str("init")) {
@@ -242,7 +246,7 @@ fn main() {
 
     let mut args = std::env::args();
     args.next();
-    let model = read_model(&mut args);
+    let model = didp_mpi::read_model(&mut args);
     let config_filename = args.next().expect("Config filename is not specified");
 
     match model.cost_type {

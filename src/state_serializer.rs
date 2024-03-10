@@ -1,9 +1,10 @@
 use dypdl::prelude::*;
-use dypdl::variable_type::{Continuous, Integer, Set};
-use mpi::datatype::DatatypeRef;
-use mpi::traits::Equivalence;
-use mpi::{Address, Count};
-use std::mem::size_of;
+use mpi::{
+    datatype::DatatypeRef,
+    traits::Equivalence,
+    {Address, Count},
+};
+use std::mem;
 use zerocopy::{AsBytes, FromBytes};
 
 /// Singleton struct for serialization and deserialization of a state and its g-, h-, and f-values.
@@ -52,13 +53,13 @@ impl StateSerializer {
         let n_integer_resource_variables = metadata.number_of_integer_resource_variables();
         let n_continuous_resource_variables = metadata.number_of_continuous_resource_variables();
 
-        let total_size = n_total_set_variable_blocks * size_of::<u32>()
-            + n_element_variables * size_of::<Element>()
-            + n_integer_variables * size_of::<Integer>()
-            + n_continuous_variables * size_of::<Continuous>()
-            + n_element_resource_variables * size_of::<Element>()
-            + n_integer_resource_variables * size_of::<Integer>()
-            + n_continuous_resource_variables * size_of::<Continuous>();
+        let total_size = n_total_set_variable_blocks * mem::size_of::<u32>()
+            + n_element_variables * mem::size_of::<Element>()
+            + n_integer_variables * mem::size_of::<Integer>()
+            + n_continuous_variables * mem::size_of::<Continuous>()
+            + n_element_resource_variables * mem::size_of::<Element>()
+            + n_integer_resource_variables * mem::size_of::<Integer>()
+            + n_continuous_resource_variables * mem::size_of::<Continuous>();
 
         Self {
             n_total_set_variable_blocks,
@@ -96,13 +97,13 @@ impl StateSerializer {
         let n_integer_resource_variables = state.get_number_of_integer_resource_variables();
         let n_continuous_resource_variables = state.get_number_of_continuous_resource_variables();
 
-        let total_size = n_total_set_variable_blocks * size_of::<u32>()
-            + n_element_variables * size_of::<Element>()
-            + n_integer_variables * size_of::<Integer>()
-            + n_continuous_variables * size_of::<Continuous>()
-            + n_element_resource_variables * size_of::<Element>()
-            + n_integer_resource_variables * size_of::<Integer>()
-            + n_continuous_resource_variables * size_of::<Continuous>();
+        let total_size = n_total_set_variable_blocks * mem::size_of::<u32>()
+            + n_element_variables * mem::size_of::<Element>()
+            + n_integer_variables * mem::size_of::<Integer>()
+            + n_continuous_variables * mem::size_of::<Continuous>()
+            + n_element_resource_variables * mem::size_of::<Element>()
+            + n_integer_resource_variables * mem::size_of::<Integer>()
+            + n_continuous_resource_variables * mem::size_of::<Continuous>();
 
         Self {
             n_total_set_variable_blocks,
@@ -199,7 +200,7 @@ impl StateSerializer {
         let set_variables = (0..self.n_set_variables)
             .map(|i| {
                 let bits = self.each_set_variable_bits[i];
-                let size = Self::compute_n_blocks(bits) * size_of::<u32>();
+                let size = Self::compute_n_blocks(bits) * mem::size_of::<u32>();
                 let mut v = Set::with_capacity(bits);
                 v.as_mut_slice()
                     .as_bytes_mut()
@@ -211,7 +212,7 @@ impl StateSerializer {
 
         let element_variables = (0..self.n_element_variables)
             .map(|_| {
-                let size = size_of::<usize>();
+                let size = mem::size_of::<usize>();
                 let v = usize::read_from(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
@@ -220,7 +221,7 @@ impl StateSerializer {
 
         let integer_variables = (0..self.n_integer_variables)
             .map(|_| {
-                let size = size_of::<Integer>();
+                let size = mem::size_of::<Integer>();
                 let v = Integer::read_from(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
@@ -229,7 +230,7 @@ impl StateSerializer {
 
         let continuous_variables = (0..self.n_continuous_variables)
             .map(|_| {
-                let size = size_of::<Continuous>();
+                let size = mem::size_of::<Continuous>();
                 let v = Continuous::read_from(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
@@ -238,7 +239,7 @@ impl StateSerializer {
 
         let element_resource_variables = (0..self.n_element_resource_variables)
             .map(|_| {
-                let size = size_of::<Element>();
+                let size = mem::size_of::<Element>();
                 let v = Element::read_from(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
@@ -247,7 +248,7 @@ impl StateSerializer {
 
         let integer_resource_variables = (0..self.n_integer_resource_variables)
             .map(|_| {
-                let size = size_of::<Integer>();
+                let size = mem::size_of::<Integer>();
                 let v = Integer::read_from(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
@@ -256,7 +257,7 @@ impl StateSerializer {
 
         let continuous_resource_variables = (0..self.n_continuous_resource_variables)
             .map(|_| {
-                let size = size_of::<Continuous>();
+                let size = mem::size_of::<Continuous>();
                 let v = Continuous::read_from(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
@@ -295,17 +296,17 @@ impl StateSerializer {
         let mut displacements = [0; 7];
         let mut offset = 0;
         displacements[0] = offset as Address;
-        offset += self.n_total_set_variable_blocks * size_of::<u32>();
+        offset += self.n_total_set_variable_blocks * mem::size_of::<u32>();
         displacements[1] = offset as Address;
-        offset += self.n_element_variables * size_of::<Element>();
+        offset += self.n_element_variables * mem::size_of::<Element>();
         displacements[2] = offset as Address;
-        offset += self.n_integer_variables * size_of::<Integer>();
+        offset += self.n_integer_variables * mem::size_of::<Integer>();
         displacements[3] = offset as Address;
-        offset += self.n_continuous_variables * size_of::<Continuous>();
+        offset += self.n_continuous_variables * mem::size_of::<Continuous>();
         displacements[4] = offset as Address;
-        offset += self.n_element_resource_variables * size_of::<Element>();
+        offset += self.n_element_resource_variables * mem::size_of::<Element>();
         displacements[5] = offset as Address;
-        offset += self.n_integer_resource_variables * size_of::<Integer>();
+        offset += self.n_integer_resource_variables * mem::size_of::<Integer>();
         displacements[6] = offset as Address;
 
         displacements

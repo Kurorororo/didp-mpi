@@ -1,7 +1,6 @@
-use mpi::traits::*;
-use mpi::{datatype::DatatypeRef, Address, Count, Rank};
+use mpi::{datatype::DatatypeRef, traits::*, Address, Count, Rank};
 use std::cell::Cell;
-use std::mem::size_of;
+use std::mem;
 use std::rc::Rc;
 use zerocopy::{AsBytes, FromBytes};
 
@@ -64,7 +63,7 @@ impl DistributedTransitionIdChain {
     }
 
     pub fn get_total_size() -> usize {
-        size_of::<Rank>() + 2 * size_of::<usize>() + size_of::<u8>()
+        mem::size_of::<Rank>() + 2 * mem::size_of::<usize>() + mem::size_of::<u8>()
     }
 
     pub fn get_datatype_blocklengths() -> [Count; 3] {
@@ -74,8 +73,8 @@ impl DistributedTransitionIdChain {
     pub fn get_datatype_displacements() -> [Address; 3] {
         [
             0 as Address,
-            size_of::<Rank>() as Address,
-            (size_of::<Rank>() + 2 * size_of::<usize>()) as Address,
+            mem::size_of::<Rank>() as Address,
+            (mem::size_of::<Rank>() + 2 * mem::size_of::<usize>()) as Address,
         ]
     }
 
@@ -121,19 +120,19 @@ impl DistributedTransitionIdChain {
     pub fn deserialize(buffer: &[u8]) -> Self {
         let mut offset = 0;
 
-        let size = size_of::<Rank>();
+        let size = mem::size_of::<Rank>();
         let parent_rank = Rank::read_from(&buffer[offset..offset + size]).unwrap();
         offset += size;
 
-        let size = size_of::<usize>();
+        let size = mem::size_of::<usize>();
         let parent_chain_id = usize::read_from(&buffer[offset..offset + size]).unwrap();
         offset += size;
 
-        let size = size_of::<usize>();
+        let size = mem::size_of::<usize>();
         let last_transition_id = usize::read_from(&buffer[offset..offset + size]).unwrap();
         offset += size;
 
-        let size = size_of::<u8>();
+        let size = mem::size_of::<u8>();
         let last_forced = u8::read_from(&buffer[offset..offset + size]).unwrap();
         let last_forced = last_forced == 1u8;
 

@@ -1,18 +1,19 @@
 use didp_yaml::heuristic_search_solver::CostToDump;
-use dypdl::prelude::*;
-use dypdl::variable_type::Numeric;
-use dypdl_heuristic_search::search_algorithm::data_structure::{
-    exceed_bound, HashableSignatureVariables,
+use dypdl::{prelude::*, variable_type::Numeric};
+use dypdl_heuristic_search::{
+    search_algorithm::{
+        data_structure::{self, HashableSignatureVariables},
+        util::TimeKeeper,
+        StateRegistry, SuccessorGenerator, TransitionWithId,
+    },
+    Parameters, Solution,
 };
-use dypdl_heuristic_search::search_algorithm::util::TimeKeeper;
-use dypdl_heuristic_search::search_algorithm::{
-    Solution, StateRegistry, SuccessorGenerator, TransitionWithId,
+use mpi::{
+    datatype::{SystemDatatype, UserDatatype},
+    topology::SimpleCommunicator,
+    traits::*,
+    Address, Rank, Tag,
 };
-use dypdl_heuristic_search::Parameters;
-use memoffset::offset_of;
-use mpi::datatype::SystemDatatype;
-use mpi::{datatype::UserDatatype, topology::SimpleCommunicator, Rank, Tag};
-use mpi::{traits::*, Address};
 use std::fmt::{Debug, Display};
 use std::fs::{File, OpenOptions};
 use std::io::Write;
@@ -22,14 +23,12 @@ use std::str::FromStr;
 
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
 use crate::distributed_id_chain::DistributedTransitionIdChain;
+use crate::io;
 use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
-use crate::partial_solution::{
-    receive_partial_solution_with_timestamp, send_partial_solution_with_time_stamp,
-    PartialSolutionTags,
-};
+use crate::partial_solution;
+use crate::partial_solution::PartialSolutionTags;
 use crate::statistics::Statistics;
-use crate::write_solution;
 
 #[derive(Copy, Clone, Debug, Default)]
 struct NTransitionIdsAndCostForSend<T>(usize, T);
@@ -44,8 +43,8 @@ where
         UserDatatype::structured(
             &[1, 1],
             &[
-                offset_of!(NTransitionIdsAndCostForSend<T>, 0) as Address,
-                offset_of!(NTransitionIdsAndCostForSend<T>, 1) as Address,
+                memoffset::offset_of!(NTransitionIdsAndCostForSend<T>, 0) as Address,
+                memoffset::offset_of!(NTransitionIdsAndCostForSend<T>, 1) as Address,
             ],
             &[usize::equivalent_datatype(), T::equivalent_datatype()],
         )
@@ -111,9 +110,9 @@ where
         UserDatatype::structured(
             &[2, 2, 1],
             &[
-                offset_of!(FinalSolutionInformationForSend<T>, 0) as Address,
-                offset_of!(FinalSolutionInformationForSend<T>, 1) as Address,
-                offset_of!(FinalSolutionInformationForSend<T>, 2) as Address,
+                memoffset::offset_of!(FinalSolutionInformationForSend<T>, 0) as Address,
+                memoffset::offset_of!(FinalSolutionInformationForSend<T>, 1) as Address,
+                memoffset::offset_of!(FinalSolutionInformationForSend<T>, 2) as Address,
             ],
             &[
                 bool::equivalent_datatype(),
@@ -405,7 +404,7 @@ where
         self.solution.time = self.time_keeper.elapsed_time();
 
         if let Some(filename) = self.solution_filename.as_ref() {
-            write_solution(&self.solution, filename);
+            io::write_solution(&self.solution, filename);
         }
 
         if let Some(file) = self.history_file.as_mut() {
@@ -448,7 +447,7 @@ where
             Self::TAG_REVERSE_TRANSITION_FORCED,
         );
 
-        if !exceed_bound(&self.model, cost, self.solution.cost) {
+        if !data_structure::exceed_bound(&self.model, cost, self.solution.cost) {
             self.solution.cost = Some(cost);
             self.update_solution_transitions(&tmp_transition_ids, &tmp_transition_forced);
 
@@ -517,7 +516,7 @@ where
             T::from(primal_bound)
         };
 
-        if !exceed_bound(&self.model, primal_bound, self.primal_bound) {
+        if !data_structure::exceed_bound(&self.model, primal_bound, self.primal_bound) {
             self.primal_bound = Some(primal_bound);
 
             if !self.quiet {
@@ -554,7 +553,7 @@ where
             self.suffix,
             &mut self.base_cost_evaluator,
         ) {
-            if !exceed_bound(&self.model, cost, self.primal_bound) {
+            if !data_structure::exceed_bound(&self.model, cost, self.primal_bound) {
                 self.primal_bound = Some(cost);
                 self.local_solution_cost = Some(cost);
 
@@ -617,7 +616,7 @@ where
         let chain = &id_to_chain_node[chain_id];
         let (transition_ids, transition_forced, parent) =
             chain.get_transition_ids_in_this_rank(id_to_chain_node);
-        send_partial_solution_with_time_stamp(
+        partial_solution::send_partial_solution_with_time_stamp(
             &source_process,
             &transition_ids,
             &transition_forced,
@@ -629,7 +628,7 @@ where
 
     fn receive_partial_solution_response(&mut self, source_rank: Rank) {
         let source_process = self.communicator.process_at_rank(source_rank);
-        let (parent, up_to_date) = receive_partial_solution_with_timestamp(
+        let (parent, up_to_date) = partial_solution::receive_partial_solution_with_timestamp(
             &source_process,
             &mut self.reverse_transition_ids,
             &mut self.reverse_transition_forced,
@@ -707,7 +706,7 @@ where
                 );
 
                 if let Some(cost) = information.cost {
-                    if !exceed_bound(model, cost, self.solution.cost) {
+                    if !data_structure::exceed_bound(model, cost, self.solution.cost) {
                         self.primal_bound = Some(cost);
                         self.solution.cost = Some(cost);
                         best_rank = source_rank;
@@ -716,7 +715,7 @@ where
                 }
 
                 if let Some(dual_bound) = information.bound {
-                    if !exceed_bound(model, dual_bound, global_dual_bound) {
+                    if !data_structure::exceed_bound(model, dual_bound, global_dual_bound) {
                         global_dual_bound = Some(dual_bound);
                     }
                 }
@@ -774,7 +773,7 @@ where
                 self.solution.time = self.time_keeper.elapsed_time();
 
                 if let Some(filename) = self.solution_filename.as_ref() {
-                    write_solution(&self.solution, filename);
+                    io::write_solution(&self.solution, filename);
                 }
 
                 if let Some(file) = self.history_file.as_mut() {

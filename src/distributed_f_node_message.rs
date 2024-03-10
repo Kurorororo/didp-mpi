@@ -5,16 +5,16 @@ use crate::state_serializer::StateSerializer;
 
 use super::distributed_f_node::DistributedFNode;
 use super::distributed_id_chain::DistributedTransitionIdChain;
-use dypdl::prelude::*;
-use dypdl::variable_type::Numeric;
-use dypdl_heuristic_search::search_algorithm::data_structure::{
-    exceed_bound, HashableSignatureVariables, StateInformation, StateWithHashableSignatureVariables,
+use dypdl::{prelude::*, variable_type::Numeric};
+use dypdl_heuristic_search::search_algorithm::{
+    self,
+    data_structure::{
+        self, HashableSignatureVariables, StateInformation, StateWithHashableSignatureVariables,
+    },
+    StateInRegistry, TransitionWithId,
 };
-use dypdl_heuristic_search::search_algorithm::{rollout, StateInRegistry, TransitionWithId};
-use mpi::datatype::DatatypeRef;
-use mpi::traits::*;
-use mpi::{Address, Count, Rank};
-use std::mem::size_of;
+use mpi::{datatype::DatatypeRef, traits::*, Address, Count, Rank};
+use std::mem;
 use std::rc::Rc;
 use zerocopy::{AsBytes, FromBytes};
 
@@ -58,9 +58,9 @@ where
 {
     fn get_total_size(serializer: &StateSerializer) -> usize {
         let size = if T::is_float() {
-            size_of::<Continuous>()
+            mem::size_of::<Continuous>()
         } else {
-            size_of::<Integer>()
+            mem::size_of::<Integer>()
         };
 
         serializer.get_total_size() + 3 * size + DistributedTransitionIdChain::get_total_size()
@@ -80,9 +80,9 @@ where
         displacements.push(offset as Address);
 
         if T::is_float() {
-            offset += 3 * size_of::<Continuous>();
+            offset += 3 * mem::size_of::<Continuous>();
         } else {
-            offset += 3 * size_of::<Integer>();
+            offset += 3 * mem::size_of::<Integer>();
         };
 
         displacements.extend(
@@ -113,7 +113,7 @@ where
         serializer.serialize_to(&self.state, &mut buffer[..offset]);
 
         if T::is_float() {
-            let size = size_of::<Continuous>();
+            let size = mem::size_of::<Continuous>();
             buffer[offset..offset + size].copy_from_slice(self.g.to_continuous().as_bytes());
             offset += size;
             buffer[offset..offset + size].copy_from_slice(self.h.to_continuous().as_bytes());
@@ -121,7 +121,7 @@ where
             buffer[offset..offset + size].copy_from_slice(self.f.to_continuous().as_bytes());
             offset += size;
         } else {
-            let size = size_of::<Integer>();
+            let size = mem::size_of::<Integer>();
             buffer[offset..offset + size].copy_from_slice(self.g.to_integer().as_bytes());
             offset += size;
             buffer[offset..offset + size].copy_from_slice(self.h.to_integer().as_bytes());
@@ -138,29 +138,29 @@ where
         let state = serializer.deserialize(&buffer[..offset]);
 
         let (g, h, f) = if T::is_float() {
-            let size = size_of::<Continuous>();
+            let size = mem::size_of::<Continuous>();
             let g = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
-            let size = size_of::<Continuous>();
+            let size = mem::size_of::<Continuous>();
             let h = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
-            let size = size_of::<Continuous>();
+            let size = mem::size_of::<Continuous>();
             let f = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
             (g, h, f)
         } else {
-            let size = size_of::<Integer>();
+            let size = mem::size_of::<Integer>();
             let g = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
-            let size = size_of::<Integer>();
+            let size = mem::size_of::<Integer>();
             let h = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
-            let size = size_of::<Integer>();
+            let size = mem::size_of::<Integer>();
             let f = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
@@ -184,11 +184,11 @@ where
 
     fn get_bound(model: &Model, serializer: &StateSerializer, data: &[u8]) -> Option<T> {
         let bound = if T::is_float() {
-            let size = size_of::<Continuous>();
+            let size = mem::size_of::<Continuous>();
             let offset = serializer.get_total_size() + 2 * size;
             T::from(Continuous::read_from(&data[offset..offset + size]).unwrap())
         } else {
-            let size = size_of::<Integer>();
+            let size = mem::size_of::<Integer>();
             let offset = serializer.get_total_size() + 2 * size;
             T::from(Integer::read_from(&data[offset..offset + size]).unwrap())
         };
@@ -217,7 +217,8 @@ where
         V: TransitionInterface,
         B: FnMut(T, T) -> T,
     {
-        let result = rollout(&self.state, self.g, suffix, base_cost_evaluator, model)?;
+        let result =
+            search_algorithm::rollout(&self.state, self.g, suffix, base_cost_evaluator, model)?;
 
         if result.is_base {
             Some((result.cost, result.transitions))
@@ -252,7 +253,7 @@ where
         let h = h_evaluator(&state)?;
         let f = f_evaluator(cost, h, &state);
 
-        if exceed_bound(model, f, primal_bound) {
+        if data_structure::exceed_bound(model, f, primal_bound) {
             return None;
         }
 
@@ -303,7 +304,7 @@ where
         let h = h_evaluator(&state)?;
         let f = f_evaluator(g, h, &state);
 
-        if exceed_bound(model, f, primal_bound) {
+        if data_structure::exceed_bound(model, f, primal_bound) {
             return None;
         }
 

@@ -1,12 +1,10 @@
 use didp_yaml::heuristic_search_solver::CostToDump;
-use dypdl::prelude::*;
-use dypdl::variable_type::Numeric;
-use dypdl_heuristic_search::search_algorithm::data_structure::{
-    exceed_bound, HashableSignatureVariables,
+use dypdl::{prelude::*, variable_type::Numeric};
+use dypdl_heuristic_search::search_algorithm::{
+    data_structure::{self, HashableSignatureVariables},
+    SearchInput, Solution, TransitionWithId,
 };
-use dypdl_heuristic_search::search_algorithm::{SearchInput, Solution, TransitionWithId};
-use mpi::traits::*;
-use mpi::{topology::SimpleCommunicator, Rank, Tag};
+use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
 use std::collections::BinaryHeap;
 use std::fmt::{Debug, Display};
 use std::rc::Rc;
@@ -244,7 +242,11 @@ where
                 node.close();
 
                 if let Some(dual_bound) = node.bound(&self.model) {
-                    if exceed_bound(&self.model, dual_bound, self.search.get_primal_bound()) {
+                    if data_structure::exceed_bound(
+                        &self.model,
+                        dual_bound,
+                        self.search.get_primal_bound(),
+                    ) {
                         if N::ordered_by_bound() {
                             self.open.clear();
                         }

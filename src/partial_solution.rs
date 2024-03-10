@@ -1,7 +1,5 @@
 use memoffset::offset_of;
-use mpi::datatype::UserDatatype;
-use mpi::traits::*;
-use mpi::{Address, Rank, Tag};
+use mpi::{datatype::UserDatatype, traits::*, Address, Rank, Tag};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 struct PartialSolutionFixeLengthData([usize; 2], Rank, bool);

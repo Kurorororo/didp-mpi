@@ -2,10 +2,11 @@ use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
 use crate::distributed_id_chain::GetDistributedTransitionIdChain;
 
 use super::distributed_id_chain::DistributedTransitionIdChain;
-use dypdl::prelude::*;
-use dypdl::variable_type::Numeric;
-use dypdl_heuristic_search::search_algorithm::data_structure::{exceed_bound, StateInformation};
-use dypdl_heuristic_search::search_algorithm::{StateInRegistry, StateRegistry, TransitionWithId};
+use dypdl::{prelude::*, variable_type::Numeric};
+use dypdl_heuristic_search::search_algorithm::{
+    data_structure::{self, StateInformation},
+    StateInRegistry, StateRegistry, TransitionWithId,
+};
 use std::cell::Cell;
 use std::cmp::Ordering;
 use std::fmt::Display;
@@ -64,7 +65,7 @@ where
         let h = h_evaluator(&state)?;
         let f = f_evaluator(cost, h, &state);
 
-        if exceed_bound(model, f, primal_bound) {
+        if data_structure::exceed_bound(model, f, primal_bound) {
             return None;
         }
 
@@ -101,7 +102,7 @@ where
         let h = h_evaluator(&state)?;
         let f = f_evaluator(g, h, &state);
 
-        if exceed_bound(model, f, primal_bound) {
+        if data_structure::exceed_bound(model, f, primal_bound) {
             return None;
         }
 
@@ -153,7 +154,7 @@ where
             };
             let f = f_evaluator(g, h, &state);
 
-            if exceed_bound(&model, f, primal_bound) {
+            if data_structure::exceed_bound(&model, f, primal_bound) {
                 return None;
             }
 

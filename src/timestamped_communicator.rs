@@ -1,6 +1,8 @@
-use mpi::datatype::{DatatypeRef, MutView, UserDatatype, View};
-use mpi::Tag;
-use mpi::{traits::*, Address, Count, Rank};
+use mpi::{
+    datatype::{DatatypeRef, MutView, UserDatatype, View},
+    traits::*,
+    Address, Count, Rank, Tag,
+};
 use std::mem;
 use zerocopy::{AsBytes, FromBytes};
 

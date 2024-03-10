@@ -1,7 +1,8 @@
-use didp_yaml::heuristic_search_solver::{CostToDump, SolutionToDump};
-use didp_yaml::{dypdl_parser, util::get_numeric};
-use dypdl::prelude::*;
-use dypdl::variable_type::Numeric;
+use didp_yaml::{
+    dypdl_parser,
+    heuristic_search_solver::{CostToDump, SolutionToDump},
+};
+use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::{FEvaluatorType, Parameters, Solution};
 use linked_hash_map::LinkedHashMap;
 use std::env::Args;
@@ -127,7 +128,7 @@ where
     };
     let time_limit = map
         .get(&yaml_rust::Yaml::from_str("time_limit"))
-        .map(|value| get_numeric(value).unwrap());
+        .map(|value| didp_yaml::util::get_numeric(value).unwrap());
     let quiet = match map.get(&yaml_rust::Yaml::from_str("quiet")) {
         Some(Yaml::Boolean(value)) => *value,
         None => false,
