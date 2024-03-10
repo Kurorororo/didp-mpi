@@ -1,7 +1,7 @@
 use mpi::datatype::{DatatypeRef, MutView, UserDatatype, View};
 use mpi::Tag;
 use mpi::{traits::*, Address, Count, Rank};
-use std::mem::size_of;
+use std::mem;
 use zerocopy::{AsBytes, FromBytes};
 
 use crate::mpi_termination_detector::MpiTerminationDetector;
@@ -49,20 +49,22 @@ where
 
     pub fn send(&mut self, buffer: &mut Vec<u8>, destination: Rank) {
         let tstamp = self.termination_detector.get_clock_to_send();
-        buffer.extend_from_slice(tstamp.as_bytes());
+        let total_size = self.offset + mem::size_of::<usize>();
+        buffer.resize(total_size, 0);
+        buffer[self.offset..total_size].copy_from_slice(tstamp.as_bytes());
         let v = unsafe { View::with_count_and_datatype(&buffer[..], 1, &self.datatype) };
         let destination_process = self.communicator.process_at_rank(destination);
         destination_process.buffered_send_with_tag(&v, self.tag);
     }
 
     pub fn receive_into(&mut self, buffer: &mut Vec<u8>, source: Rank) {
-        buffer.resize(self.offset + size_of::<usize>(), 0);
+        let total_size = self.offset + mem::size_of::<usize>();
+        buffer.resize(total_size, 0);
         let mut v = unsafe { MutView::with_count_and_datatype(&mut buffer[..], 1, &self.datatype) };
         let source_process = self.communicator.process_at_rank(source);
         source_process.receive_into_with_tag(&mut v, self.tag);
 
-        let tstamp =
-            usize::read_from(&buffer[self.offset..self.offset + size_of::<usize>()]).unwrap();
+        let tstamp = usize::read_from(&buffer[self.offset..total_size]).unwrap();
         self.termination_detector.notify_received(tstamp);
 
         buffer.truncate(self.offset);
