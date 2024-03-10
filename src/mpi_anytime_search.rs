@@ -915,15 +915,11 @@ where
         self.solution_manager.cannot_terminate()
     }
 
-    fn open_node_inner<C>(
+    fn open_node_inner(
         node: N,
-        mut callback: C,
         registry: &mut StateRegistry<T, N>,
         solution_manager: &mut MpiSolutionManager<'a, T, B, V>,
-    ) -> bool
-    where
-        C: FnMut(Rc<N>),
-    {
+    ) -> Option<Rc<N>> {
         if let Some((node, dominated)) = registry.insert(node) {
             if let Some(dominated) = dominated {
                 if !dominated.is_closed() {
@@ -933,30 +929,17 @@ where
                 solution_manager.increment_generated();
             };
 
-            callback(node);
-
-            true
+            Some(node)
         } else {
-            false
+            None
         }
     }
 
-    pub fn open_node<C>(&mut self, node: N, callback: C) -> bool
-    where
-        C: FnMut(Rc<N>),
-    {
-        Self::open_node_inner(
-            node,
-            callback,
-            &mut self.registry,
-            &mut self.solution_manager,
-        )
+    pub fn open_node(&mut self, node: N) -> Option<Rc<N>> {
+        Self::open_node_inner(node, &mut self.registry, &mut self.solution_manager)
     }
 
-    pub fn generate_root_node<C>(&mut self, node: Option<M>, callback: C)
-    where
-        C: FnMut(Rc<N>),
-    {
+    pub fn generate_root_node(&mut self, node: Option<M>) -> Option<Rc<N>> {
         if let Some(node) = node {
             let hash_value = (self.hash_function)(node.get_signature());
             let assigned_rank = (hash_value % self.communicator.size() as u64) as Rank;
@@ -970,6 +953,8 @@ where
 
                 if is_goal {
                     self.solution_manager.solution.is_optimal = true;
+
+                    None
                 } else {
                     let node = N::from(node);
 
@@ -977,11 +962,15 @@ where
                         self.solution_manager.update_dual_bound(bound);
                     }
 
-                    self.open_node(node, callback);
+                    self.open_node(node)
                 }
+            } else {
+                None
             }
         } else {
             self.solution_manager.solution.is_infeasible = true;
+
+            None
         }
     }
 
@@ -994,11 +983,15 @@ where
             .receive_message(source_rank, tag, &self.id_to_chain_node)
     }
 
-    pub fn expand<L, S>(&mut self, node: Rc<N>, mut local_callback: L, mut send_callback: S) -> bool
-    where
-        L: FnMut(Rc<N>),
-        S: FnMut(Rank, M),
-    {
+    pub fn expand(
+        &mut self,
+        node: Rc<N>,
+        keep_buffer: &mut Vec<Rc<N>>,
+        send_buffer: &mut Vec<(Rank, M)>,
+    ) -> bool {
+        keep_buffer.clear();
+        send_buffer.clear();
+
         let mut no_successor = true;
         node.get_distributed_transition_id_chain()
             .id
@@ -1036,19 +1029,22 @@ where
                     self.solution_manager.increment_kept();
                     let successor = N::from(successor);
 
-                    let is_inserted = Self::open_node_inner(
+                    let successor = Self::open_node_inner(
                         successor,
-                        &mut local_callback,
                         &mut self.registry,
                         &mut self.solution_manager,
                     );
 
-                    if is_inserted && no_successor {
-                        no_successor = false;
+                    if let Some(successor) = successor {
+                        if no_successor {
+                            no_successor = false;
+                        }
+
+                        keep_buffer.push(successor);
                     }
                 } else {
                     successor.set_parent_rank(this_rank);
-                    send_callback(destination_rank, successor);
+                    send_buffer.push((destination_rank, successor));
                     self.solution_manager.increment_sent();
 
                     if no_successor {

@@ -90,9 +90,9 @@ where
 
         let mut open = vec![BinaryHeap::new()];
 
-        search.generate_root_node(input.node, |node| {
+        if let Some(node) = search.generate_root_node(input.node) {
             open[0].push(node);
-        });
+        }
 
         Self {
             model,
@@ -116,16 +116,15 @@ where
             .node_communicator
             .receive(source_rank, self.search.get_primal_bound())
         {
-            let callback = |node| {
+            let node = N::from(node);
+
+            if let Some(node) = self.search.open_node(node) {
                 while depth >= self.open.len() {
                     self.open.push(BinaryHeap::new());
                 }
 
                 self.open[depth].push(node);
-            };
-
-            let node = N::from(node);
-            self.search.open_node(node, callback);
+            }
         }
     }
 
@@ -218,6 +217,8 @@ where
         let mut current_depth = 0;
         let mut no_node = true;
         let mut goal_found = false;
+        let mut keep_buffer = vec![];
+        let mut send_buffer = vec![];
 
         'outer: loop {
             let mut popped = 0;
@@ -262,21 +263,20 @@ where
                 }
 
                 popped += 1;
+                goal_found |= self.search.expand(node, &mut keep_buffer, &mut send_buffer);
 
-                let local_callback = |successor| {
+                for (destination_rank, successor) in send_buffer.drain(..) {
+                    self.node_communicator
+                        .send(destination_rank, &successor, current_depth + 1);
+                }
+
+                for successor in keep_buffer.drain(..) {
                     while current_depth + 1 >= self.open.len() {
                         self.open.push(BinaryHeap::default());
                     }
 
                     self.open[current_depth + 1].push(successor);
-                };
-
-                let send_callback = |destination_rank, successor| {
-                    self.node_communicator
-                        .send(destination_rank, &successor, current_depth + 1);
-                };
-
-                goal_found |= self.search.expand(node, local_callback, send_callback);
+                }
             }
 
             if goal_found {

@@ -94,9 +94,9 @@ where
         let mut children = BinaryHeap::new();
         let suspend = BinaryHeap::new();
 
-        search.generate_root_node(input.node, |node| {
+        if let Some(node) = search.generate_root_node(input.node) {
             children.push(node);
-        });
+        }
 
         Self {
             model,
@@ -122,12 +122,11 @@ where
             .node_communicator
             .receive(source_rank, self.search.get_primal_bound())
         {
-            let callback = |node| {
-                self.children.push(node);
-            };
-
             let node = N::from(node);
-            self.search.open_node(node, callback);
+
+            if let Some(node) = self.search.open_node(node) {
+                self.children.push(node);
+            }
         }
     }
 
@@ -221,6 +220,8 @@ where
 
     pub fn search(mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
         let mut goal_found = false;
+        let mut keep_buffer = vec![];
+        let mut send_buffer = vec![];
 
         'outer: loop {
             self.process_message();
@@ -330,15 +331,15 @@ where
                     }
                 }
 
-                let local_callback = |successor| {
-                    self.children.push(successor);
-                };
+                goal_found |= self.search.expand(node, &mut keep_buffer, &mut send_buffer);
 
-                let send_callback = |destination_rank, successor| {
+                for (destination_rank, successor) in send_buffer.drain(..) {
                     self.node_communicator.send(destination_rank, &successor);
-                };
+                }
 
-                goal_found |= self.search.expand(node, local_callback, send_callback);
+                for successor in keep_buffer.drain(..) {
+                    self.children.push(successor);
+                }
             }
         }
 

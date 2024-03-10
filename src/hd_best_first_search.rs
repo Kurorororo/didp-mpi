@@ -87,9 +87,9 @@ where
 
         let mut open = BinaryHeap::new();
 
-        search.generate_root_node(input.node, |node| {
+        if let Some(node) = search.generate_root_node(input.node) {
             open.push(node);
-        });
+        }
 
         Self {
             model,
@@ -111,12 +111,11 @@ where
             .node_communicator
             .receive(source_rank, self.search.get_primal_bound())
         {
-            let callback = |node| {
-                self.open.push(node);
-            };
-
             let node = N::from(node);
-            self.search.open_node(node, callback);
+
+            if let Some(node) = self.search.open_node(node) {
+                self.open.push(node);
+            }
         }
     }
 
@@ -206,6 +205,9 @@ where
     }
 
     pub fn search(mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
+        let mut keep_buffer = vec![];
+        let mut send_buffer = vec![];
+
         loop {
             self.process_message();
 
@@ -250,15 +252,15 @@ where
                     }
                 }
 
-                let local_callback = |successor| {
-                    self.open.push(successor);
-                };
+                self.search.expand(node, &mut keep_buffer, &mut send_buffer);
 
-                let send_callback = |destination_rank, successor| {
+                for (destination_rank, successor) in send_buffer.drain(..) {
                     self.node_communicator.send(destination_rank, &successor);
-                };
+                }
 
-                self.search.expand(node, local_callback, send_callback);
+                for successor in keep_buffer.drain(..) {
+                    self.open.push(successor)
+                }
             } else if self.communicator.rank() == self.search.get_root_rank()
                 && !self.is_checking_termination
             {
