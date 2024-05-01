@@ -168,18 +168,17 @@ where
             Some(Self::new(state, g, h, f, transition_id_chain))
         };
 
-        let (successor, dominated) = registry.insert_with(state, g, constructor)?;
+        let result = registry.insert_with(state, g, constructor);
 
-        let mut generated = true;
-
-        if let Some(dominated) = dominated {
-            if !dominated.is_closed() {
-                dominated.close();
-                generated = false;
+        for d in result.dominated.iter() {
+            if !d.is_closed() {
+                d.close();
             }
         }
 
-        Some((successor, generated))
+        let successor = result.information?;
+
+        Some((successor, result.dominated.is_empty()))
     }
 }
 
@@ -827,7 +826,7 @@ mod tests {
         let node = node.unwrap();
         node.transition_id_chain.id.set(Some(0));
         let result = registry.insert(node.clone());
-        assert!(result.is_some());
+        assert!(result.information.is_some());
 
         let result = node.insert_successor_node(
             &transition,
@@ -889,7 +888,7 @@ mod tests {
         let node = node.unwrap();
         node.transition_id_chain.id.set(Some(0));
         let result = registry.insert(node.clone());
-        assert!(result.is_some());
+        assert!(result.information.is_some());
 
         let result = node.insert_successor_node(
             &transition,
@@ -954,7 +953,7 @@ mod tests {
         let node = node.unwrap();
         node.transition_id_chain.id.set(Some(0));
         let result = registry.insert(node.clone());
-        assert!(result.is_some());
+        assert!(result.information.is_some());
 
         let result = node.insert_successor_node(
             &transition,
@@ -1021,7 +1020,7 @@ mod tests {
         let node = node.unwrap();
         node.transition_id_chain.id.set(Some(0));
         let result = registry.insert(node.clone());
-        assert!(result.is_some());
+        assert!(result.information.is_some());
 
         let expected_state: StateInRegistry = transition1.apply(&state, &model.table_registry);
         let result = node.insert_successor_node(
@@ -1111,7 +1110,7 @@ mod tests {
         let node = node.unwrap();
         node.transition_id_chain.id.set(Some(0));
         let result = registry.insert(node.clone());
-        assert!(result.is_some());
+        assert!(result.information.is_some());
 
         let expected_state: StateInRegistry = transition1.apply(&state, &model.table_registry);
         let result = node.insert_successor_node(
@@ -1201,7 +1200,7 @@ mod tests {
         let node = node.unwrap();
         node.transition_id_chain.id.set(Some(0));
         let result = registry.insert(node.clone());
-        assert!(result.is_some());
+        assert!(result.information.is_some());
 
         let expected_state: StateInRegistry = transition2.apply(&state, &model.table_registry);
         let result = node.insert_successor_node(
@@ -1284,7 +1283,7 @@ mod tests {
         let node = node.unwrap();
         node.transition_id_chain.id.set(Some(0));
         let result = registry.insert(node.clone());
-        assert!(result.is_some());
+        assert!(result.information.is_some());
 
         let expected_state: StateInRegistry = transition2.apply(&state, &model.table_registry);
         let result = node.insert_successor_node(
@@ -1355,7 +1354,7 @@ mod tests {
         let node = node.unwrap();
         node.transition_id_chain.id.set(Some(0));
         let result = registry.insert(node.clone());
-        assert!(result.is_some());
+        assert!(result.information.is_some());
 
         let result = node.insert_successor_node(
             &transition1,
@@ -1410,7 +1409,7 @@ mod tests {
         let node = node.unwrap();
         node.transition_id_chain.id.set(Some(0));
         let result = registry.insert(node.clone());
-        assert!(result.is_some());
+        assert!(result.information.is_some());
 
         let h_evaluator = |_: &_| Some(1);
         let result = node.insert_successor_node(

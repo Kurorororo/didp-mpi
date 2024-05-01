@@ -919,19 +919,21 @@ where
         registry: &mut StateRegistry<T, N>,
         solution_manager: &mut MpiSolutionManager<'a, T, B, V>,
     ) -> Option<Rc<N>> {
-        if let Some((node, dominated)) = registry.insert(node) {
-            if let Some(dominated) = dominated {
-                if !dominated.is_closed() {
-                    dominated.close();
-                }
-            } else {
-                solution_manager.increment_generated();
-            };
+        let result = registry.insert(node);
 
-            Some(node)
-        } else {
-            None
+        for d in result.dominated.iter() {
+            if !d.is_closed() {
+                d.close();
+            }
         }
+
+        let node = result.information?;
+
+        if result.dominated.is_empty() {
+            solution_manager.increment_generated();
+        }
+
+        Some(node)
     }
 
     pub fn open_node(&mut self, node: N) -> Option<Rc<N>> {
