@@ -1,4 +1,5 @@
 use dypdl::prelude::*;
+use fixedbitset::Block;
 use mpi::{
     datatype::DatatypeRef,
     traits::Equivalence,
@@ -24,7 +25,8 @@ pub struct StateSerializer {
 
 impl StateSerializer {
     fn compute_n_blocks(bits: usize) -> usize {
-        let (mut blocks, rem) = (bits / 32, bits % 32);
+        let block_size = mem::size_of::<Block>() * 8;
+        let (mut blocks, rem) = (bits / block_size, bits % block_size);
         blocks += (rem > 0) as usize;
         blocks
     }
@@ -53,7 +55,7 @@ impl StateSerializer {
         let n_integer_resource_variables = metadata.number_of_integer_resource_variables();
         let n_continuous_resource_variables = metadata.number_of_continuous_resource_variables();
 
-        let total_size = n_total_set_variable_blocks * mem::size_of::<u32>()
+        let total_size = n_total_set_variable_blocks * mem::size_of::<Block>()
             + n_element_variables * mem::size_of::<Element>()
             + n_integer_variables * mem::size_of::<Integer>()
             + n_continuous_variables * mem::size_of::<Continuous>()
@@ -97,7 +99,7 @@ impl StateSerializer {
         let n_integer_resource_variables = state.get_number_of_integer_resource_variables();
         let n_continuous_resource_variables = state.get_number_of_continuous_resource_variables();
 
-        let total_size = n_total_set_variable_blocks * mem::size_of::<u32>()
+        let total_size = n_total_set_variable_blocks * mem::size_of::<Block>()
             + n_element_variables * mem::size_of::<Element>()
             + n_integer_variables * mem::size_of::<Integer>()
             + n_continuous_variables * mem::size_of::<Continuous>()
@@ -200,7 +202,7 @@ impl StateSerializer {
         let set_variables = (0..self.n_set_variables)
             .map(|i| {
                 let bits = self.each_set_variable_bits[i];
-                let size = Self::compute_n_blocks(bits) * mem::size_of::<u32>();
+                let size = Self::compute_n_blocks(bits) * mem::size_of::<Block>();
                 let mut v = Set::with_capacity(bits);
                 v.as_mut_slice()
                     .as_bytes_mut()
@@ -296,7 +298,7 @@ impl StateSerializer {
         let mut displacements = [0; 7];
         let mut offset = 0;
         displacements[0] = offset as Address;
-        offset += self.n_total_set_variable_blocks * mem::size_of::<u32>();
+        offset += self.n_total_set_variable_blocks * mem::size_of::<Block>();
         displacements[1] = offset as Address;
         offset += self.n_element_variables * mem::size_of::<Element>();
         displacements[2] = offset as Address;
@@ -314,7 +316,7 @@ impl StateSerializer {
 
     pub fn get_datatype_types(&self) -> [DatatypeRef<'static>; 7] {
         [
-            u32::equivalent_datatype(),
+            Block::equivalent_datatype(),
             Element::equivalent_datatype(),
             Integer::equivalent_datatype(),
             Continuous::equivalent_datatype(),
