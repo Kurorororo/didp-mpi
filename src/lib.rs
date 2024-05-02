@@ -4,10 +4,11 @@ mod distributed_f_node_message;
 mod distributed_id_chain;
 mod hash_functions;
 mod hcbfs;
+mod hd_acps;
+mod hd_apps;
 mod hd_beam_search2;
 mod hd_best_first_search;
-mod hdacps;
-mod hdapps;
+mod hd_hcbfs;
 mod io;
 mod is_float;
 mod mpi_anytime_search;
@@ -25,10 +26,11 @@ pub use hash_functions::{
     create_fx_hash, create_set_zobrist_hash, create_set_zobrist_hash_with_others,
 };
 pub use hcbfs::Hcbfs;
+pub use hd_acps::HdAcps;
+pub use hd_apps::HdApps;
 pub use hd_beam_search2::hd_beam_search2;
 pub use hd_best_first_search::HdBestFirstSearch;
-pub use hdacps::HdAcps;
-pub use hdapps::HdApps;
+pub use hd_hcbfs::HdHcbfs;
 pub use io::{
     dump_solution, load_parameters_from_map, read_model, write_solution,
     AdditionalCommonParameters, HashType,

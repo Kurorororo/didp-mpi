@@ -1,7 +1,7 @@
 use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::{
     search_algorithm::{
-        data_structure::{self, exceed_bound, BfsNode},
+        data_structure::{self, BfsNode},
         get_solution_cost_and_suffix,
         util::{self, TimeKeeper},
         SearchInput, StateRegistry, SuccessorGenerator,
@@ -115,7 +115,7 @@ where
             node.close();
 
             if node.bound(model).map_or(false, |dual_bound| {
-                exceed_bound(model, dual_bound, self.primal_bound)
+                data_structure::exceed_bound(model, dual_bound, self.primal_bound)
             }) {
                 if N::ordered_by_bound() {
                     self.open.clear();
@@ -144,7 +144,7 @@ where
             node.close();
 
             if node.bound(model).map_or(false, |dual_bound| {
-                exceed_bound(model, dual_bound, self.primal_bound)
+                data_structure::exceed_bound(model, dual_bound, self.primal_bound)
             }) {
                 if N::ordered_by_bound() {
                     self.layered_open[self.current_depth].clear();
