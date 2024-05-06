@@ -162,12 +162,12 @@ where
             let initial_depth = self.current_depth;
 
             loop {
+                let result = self.pop_from_layered_open();
+                self.current_depth += 1;
+
                 if self.current_depth > self.layered_open.len() - 1 {
                     self.current_depth = 0;
                 }
-
-                let result = self.pop_from_layered_open();
-                self.current_depth += 1;
 
                 if result.is_some() {
                     self.is_layered_turn = false;

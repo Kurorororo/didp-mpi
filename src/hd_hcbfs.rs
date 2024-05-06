@@ -178,7 +178,7 @@ where
         let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
         let local_invalid = self.search.cannot_terminate()
             || self.n_remaining_time_out_ack > 0
-            || (!self.is_time_out && self.layered_open.iter().any(|o| !o.is_empty()));
+            || (!self.is_time_out && !self.open.is_empty());
         let result = self
             .node_communicator
             .receive_termination_detection_and_forward(
@@ -271,12 +271,12 @@ where
             let initial_depth = self.current_depth;
 
             loop {
+                let result = self.pop_from_layered_open();
+                self.current_depth += 1;
+
                 if self.current_depth > self.layered_open.len() - 1 {
                     self.current_depth = 0;
                 }
-
-                let result = self.pop_from_layered_open();
-                self.current_depth += 1;
 
                 if result.is_some() {
                     self.is_layered_turn = false;
