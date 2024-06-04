@@ -1,5 +1,5 @@
-use didp_mpi::Hcbfs;
-use didp_yaml::heuristic_search_solver::{self, CostToDump};
+use didp_mpi::{Hcbfs, IsFloat, KeyValueStatistics};
+use didp_yaml::heuristic_search_solver::{CostToDump, SolutionToDump};
 use dypdl::{
     prelude::*,
     variable_type::{Numeric, OrderedContinuous},
@@ -8,11 +8,16 @@ use dypdl_heuristic_search::{
     search_algorithm::{FNode, SearchInput, SuccessorGenerator},
     FEvaluatorType, Parameters, Search,
 };
-use std::fmt::{Debug, Display};
 use std::fs;
+use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
-use yaml_rust::{Yaml, YamlLoader};
+use std::{error::Error, io::Write};
+use std::{
+    fmt::{Debug, Display},
+    fs::OpenOptions,
+};
+use yaml_rust::{Yaml, YamlEmitter, YamlLoader};
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -21,13 +26,49 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-fn main_with_cost_type<T>(model: Model, config_filename: &str)
+fn solve_and_dump_solutions<T, S: Search<T>>(
+    solver: &mut S,
+    history_filename: &str,
+    solution_filename: &str,
+) -> Result<dypdl_heuristic_search::Solution<T>, Box<dyn Error>>
 where
     T: Numeric + Ord + Display + 'static,
+    <T as FromStr>::Err: Debug,
+    CostToDump: From<T>,
+{
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(history_filename)?;
+
+    loop {
+        let (solution, terminated) = solver.search_next()?;
+
+        if let Some(cost) = solution.cost {
+            let line = format!(
+                "{}, {}, {}, {}\n",
+                solution.time, cost, solution.expanded, solution.generated
+            );
+            file.write_all(line.as_bytes())?;
+            let solution_to_dump = SolutionToDump::from(solution.clone());
+            solution_to_dump.dump_to_file(solution_filename)?;
+        }
+
+        if terminated {
+            return Ok(solution);
+        }
+    }
+}
+
+fn main_with_cost_type<T>(model: Model, config_filename: &str)
+where
+    T: Numeric + Ord + Display + Hash + IsFloat + 'static,
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
 {
-    let (parameters, f_evaluator_type) = load_config_from_file::<T>(config_filename);
+    let (parameters, f_evaluator_type, count_bound_to_expanded) =
+        load_config_from_file::<T>(config_filename);
 
     let model = Rc::new(model);
     let generator = SuccessorGenerator::<Transition>::from_model(model.clone(), false);
@@ -66,21 +107,32 @@ where
             )
         };
 
-    let solver: Box<dyn Search<T>> = Box::new(Hcbfs::new(
+    let mut solver = Hcbfs::new(
         input,
         transition_evaluator,
         base_cost_evaluator,
         parameters,
-    ));
+        count_bound_to_expanded,
+    );
 
-    let solution =
-        heuristic_search_solver::solve_and_dump_solutions(solver, "history.csv", "solution.csv")
-            .unwrap();
+    let solution = solve_and_dump_solutions(&mut solver, "history.csv", "solution.yaml").unwrap();
 
     didp_mpi::dump_solution(&solution);
+
+    if count_bound_to_expanded {
+        let bound_to_expanded = KeyValueStatistics::from(solver.get_bound_to_expanded());
+        let bound_to_expanded = Yaml::Array(vec![bound_to_expanded.into()]);
+
+        let mut out_str = String::new();
+        {
+            let mut emitter = YamlEmitter::new(&mut out_str);
+            emitter.dump(&bound_to_expanded).unwrap();
+        }
+        fs::write("bound_to_expanded.yaml", out_str).unwrap();
+    }
 }
 
-fn load_config_from_file<T>(filename: &str) -> (Parameters<T>, FEvaluatorType)
+fn load_config_from_file<T>(filename: &str) -> (Parameters<T>, FEvaluatorType, bool)
 where
     T: Numeric,
     <T as FromStr>::Err: Debug,
@@ -110,7 +162,15 @@ where
         })
         .unwrap_or(FEvaluatorType::Plus);
 
-    (parameters, f_evaluator_type)
+    let count_bound_to_expanded = map
+        .get(&Yaml::String("count_bound_to_expanded".into()))
+        .map(|t| {
+            t.as_bool()
+                .expect("count_bound_to_expanded must be boolean")
+        })
+        .unwrap_or(false);
+
+    (parameters, f_evaluator_type, count_bound_to_expanded)
 }
 
 fn main() {

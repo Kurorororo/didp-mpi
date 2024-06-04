@@ -8,14 +8,16 @@ use dypdl_heuristic_search::{
     },
     Parameters, Search, Solution,
 };
+use rustc_hash::FxHashMap;
 use std::collections::BinaryHeap;
 use std::error::Error;
 use std::fmt;
+use std::hash::Hash;
 use std::rc::Rc;
 
 pub struct Hcbfs<'a, T, N, E, B, V = Transition>
 where
-    T: Numeric + Ord + fmt::Display,
+    T: Numeric + Ord + fmt::Display + Hash,
     N: BfsNode<T, V>,
     E: FnMut(&N, Rc<V>, &mut StateRegistry<T, N>, Option<T>) -> Option<(Rc<N>, bool)>,
     B: FnMut(T, T) -> T,
@@ -35,12 +37,14 @@ where
     is_layered_turn: bool,
     current_depth: usize,
     time_keeper: TimeKeeper,
+    count_bound_to_expanded: bool,
+    bound_to_expanded: FxHashMap<T, usize>,
     solution: Solution<T>,
 }
 
 impl<'a, T, N, E, B, V> Hcbfs<'a, T, N, E, B, V>
 where
-    T: Numeric + Ord + fmt::Display,
+    T: Numeric + Ord + fmt::Display + Hash,
     N: BfsNode<T, V>,
     E: FnMut(&N, Rc<V>, &mut StateRegistry<T, N>, Option<T>) -> Option<(Rc<N>, bool)>,
     B: FnMut(T, T) -> T,
@@ -53,6 +57,7 @@ where
         transition_evaluator: E,
         base_cost_evaluator: B,
         parameters: Parameters<T>,
+        count_bound_to_expanded: bool,
     ) -> Hcbfs<'a, T, N, E, B, V> {
         let time_keeper = parameters
             .time_limit
@@ -100,6 +105,8 @@ where
             is_layered_turn: false,
             current_depth: 0,
             time_keeper,
+            count_bound_to_expanded,
+            bound_to_expanded: FxHashMap::default(),
             solution,
         }
     }
@@ -189,11 +196,15 @@ where
 
         self.pop_from_open()
     }
+
+    pub fn get_bound_to_expanded(&self) -> FxHashMap<T, usize> {
+        self.bound_to_expanded.clone()
+    }
 }
 
 impl<'a, T, N, E, B, V> Search<T> for Hcbfs<'a, T, N, E, B, V>
 where
-    T: Numeric + Ord + fmt::Display,
+    T: Numeric + Ord + fmt::Display + Hash,
     N: BfsNode<T, V>,
     E: FnMut(&N, Rc<V>, &mut StateRegistry<T, N>, Option<T>) -> Option<(Rc<N>, bool)>,
     B: FnMut(T, T) -> T,
@@ -248,6 +259,15 @@ where
             }
 
             self.solution.expanded += 1;
+
+            if self.count_bound_to_expanded {
+                if let Some(bound) = node.bound(model) {
+                    self.bound_to_expanded
+                        .entry(bound)
+                        .and_modify(|e| *e += 1)
+                        .or_insert(1);
+                }
+            }
 
             for transition in self.generator.applicable_transitions(node.state()) {
                 if let Some((successor, new_generated)) = (self.transition_evaluator)(

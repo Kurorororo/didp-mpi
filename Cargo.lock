@@ -203,6 +203,7 @@ dependencies = [
  "approx",
  "dypdl",
  "dypdl-heuristic-search",
+ "itertools",
  "lazy_static",
  "linked-hash-map",
  "num-traits",
@@ -219,6 +220,7 @@ version = "0.7.3"
 dependencies = [
  "approx",
  "fixedbitset",
+ "itertools",
  "num-traits",
  "ordered-float",
  "rustc-hash",

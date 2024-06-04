@@ -10,11 +10,13 @@ use dypdl_heuristic_search::{
 use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
 use std::collections::BinaryHeap;
 use std::fmt::{Debug, Display};
+use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
 
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
 use crate::is_float::IsFloat;
+use crate::key_value_statistics::KeyValueStatistics;
 use crate::mpi_anytime_search::{MpiAnytimeSearch, MpiAnytimeSearchParameters};
 use crate::node_communicator::TimeStampedNodeCommunicator;
 use crate::node_data_type::NodeDatatype;
@@ -43,7 +45,7 @@ where
 
 impl<'a, T, N, M, E, B, F, V> HdApps<'a, T, N, M, E, B, F, V>
 where
-    T: Numeric + IsFloat + Ord + Display,
+    T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
@@ -218,7 +220,7 @@ where
         }
     }
 
-    pub fn search(mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
+    pub fn search(&mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
         let mut goal_found = false;
         let mut keep_buffer = vec![];
         let mut send_buffer = vec![];
@@ -408,5 +410,9 @@ where
         solution.time = self.search.elapsed_time();
 
         (solution, statistics)
+    }
+
+    pub fn gather_bound_to_expanded(&self) -> Vec<KeyValueStatistics<T, usize>> {
+        self.search.gather_bound_to_expanded()
     }
 }

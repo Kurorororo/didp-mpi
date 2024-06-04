@@ -172,6 +172,7 @@ pub struct AdditionalCommonParameters {
     pub buffer_size: Option<usize>,
     pub hash_type: HashType,
     pub zobrist_zero_probability: Option<f64>,
+    pub count_bound_to_expanded: bool,
 }
 
 impl AdditionalCommonParameters {
@@ -214,11 +215,20 @@ impl AdditionalCommonParameters {
                     .expect("zobrist_zero_probability must be a float")
             });
 
+        let count_bound_to_expanded = map
+            .get(&Yaml::String("count_bound_to_expanded".into()))
+            .map(|x| {
+                x.as_bool()
+                    .expect("count_bound_to_expanded must be a boolean")
+            })
+            .unwrap_or(false);
+
         Self {
             f_evaluator_type,
             buffer_size,
             hash_type,
             zobrist_zero_probability,
+            count_bound_to_expanded,
         }
     }
 }

@@ -11,6 +11,7 @@ mod hd_best_first_search;
 mod hd_hcbfs;
 mod io;
 mod is_float;
+mod key_value_statistics;
 mod mpi_anytime_search;
 mod mpi_termination_detector;
 mod node_communicator;
@@ -36,5 +37,6 @@ pub use io::{
     AdditionalCommonParameters, HashType,
 };
 pub use is_float::IsFloat;
+pub use key_value_statistics::KeyValueStatistics;
 pub use mpi_anytime_search::MpiAnytimeSearchParameters;
 pub use statistics::Statistics;

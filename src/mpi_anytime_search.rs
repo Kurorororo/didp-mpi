@@ -14,21 +14,28 @@ use mpi::{
     traits::*,
     Address, Rank, Tag,
 };
+use rustc_hash::FxHashMap;
 use std::fmt::{Debug, Display};
 use std::fs::{File, OpenOptions};
+use std::hash::Hash;
 use std::io::Write;
 use std::marker::PhantomData;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
-use crate::distributed_id_chain::DistributedTransitionIdChain;
 use crate::io;
 use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
 use crate::partial_solution;
 use crate::partial_solution::PartialSolutionTags;
 use crate::statistics::Statistics;
+use crate::{
+    bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
+};
+use crate::{
+    distributed_id_chain::DistributedTransitionIdChain,
+    key_value_statistics::KeyValueStatisticsTags,
+};
 
 #[derive(Copy, Clone, Debug, Default)]
 struct NTransitionIdsAndCostForSend<T>(usize, T);
@@ -204,6 +211,7 @@ where
     pub controller_rank: Rank,
     pub solution_filename: Option<String>,
     pub history_filename: Option<String>,
+    pub count_bound_to_expanded: bool,
     pub parameters: Parameters<T>,
 }
 
@@ -220,8 +228,10 @@ where
     base_cost_evaluator: B,
     suffix: &'a [TransitionWithId<V>],
     primal_bound: Option<T>,
+    bound_to_expanded: FxHashMap<T, usize>,
     solution: Solution<T, TransitionWithId<V>>,
     statistics: Statistics,
+    count_bound_to_expanded: bool,
     local_solution_cost: Option<T>,
     reverse_transition_ids: Vec<usize>,
     reverse_transition_forced: Vec<bool>,
@@ -238,7 +248,7 @@ where
 
 impl<'a, T, B, V> MpiSolutionManager<'a, T, B, V>
 where
-    T: Numeric + IsFloat + Ord + Display,
+    T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     B: FnMut(T, T) -> T,
@@ -263,7 +273,12 @@ where
     const TAG_FINAL_TRANSITION_IDS_REQUEST: Tag = 11;
     const TAG_FINAL_TRANSITION_IDS: Tag = 12;
     const TAG_FINAL_TRANSITION_FORCED: Tag = 13;
-    pub const TAG_OFFSET: Tag = 14;
+    const TAG_BOUND_TO_EXPANDED: KeyValueStatisticsTags = KeyValueStatisticsTags {
+        n_keys_tag: 14,
+        keys_tag: 15,
+        values_tag: 16,
+    };
+    pub const TAG_OFFSET: Tag = 17;
 
     pub fn new(
         generator: &SuccessorGenerator<TransitionWithId<V>>,
@@ -293,6 +308,7 @@ where
         let history_filename = parameters.history_filename;
         let primal_bound = parameters.parameters.primal_bound;
         let quiet = parameters.parameters.quiet;
+        let count_bound_to_expanded = parameters.count_bound_to_expanded;
 
         let history_file = history_filename.map(|filename| {
             OpenOptions::new()
@@ -312,8 +328,10 @@ where
             base_cost_evaluator,
             suffix,
             primal_bound,
+            count_bound_to_expanded,
             solution: Solution::default(),
             statistics: Statistics::default(),
+            bound_to_expanded: FxHashMap::default(),
             local_solution_cost: None,
             reverse_transition_ids: Vec::default(),
             reverse_transition_forced: Vec::default(),
@@ -352,9 +370,18 @@ where
             || self.n_solution_ack_remaining > 0
     }
 
-    pub fn increment_expanded(&mut self) {
+    pub fn increment_expanded(&mut self, bound: Option<T>) {
         self.solution.expanded += 1;
         self.statistics.expanded += 1;
+
+        if self.count_bound_to_expanded {
+            if let Some(bound) = bound {
+                self.bound_to_expanded
+                    .entry(bound)
+                    .and_modify(|v| *v += 1)
+                    .or_insert(1);
+            }
+        }
     }
 
     pub fn increment_generated(&mut self) {
@@ -824,6 +851,20 @@ where
             (self.solution.clone(), statistics)
         }
     }
+
+    pub fn gather_bound_to_expanded(&self) -> Vec<KeyValueStatistics<T, usize>> {
+        if !self.count_bound_to_expanded {
+            return Vec::default();
+        }
+
+        let bound_to_expanded = KeyValueStatistics::from(self.bound_to_expanded.clone());
+
+        bound_to_expanded.gather(
+            self.communicator,
+            self.root_rank,
+            Self::TAG_BOUND_TO_EXPANDED,
+        )
+    }
 }
 
 pub struct MpiAnytimeSearch<'a, T, N, M, E, B, F, V = Transition>
@@ -844,7 +885,7 @@ where
 
 impl<'a, T, N, M, E, B, F, V> MpiAnytimeSearch<'a, T, N, M, E, B, F, V>
 where
-    T: Numeric + IsFloat + Ord + Display,
+    T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
@@ -1000,7 +1041,8 @@ where
         self.id_to_chain_node
             .push(node.get_distributed_transition_id_chain().clone());
 
-        self.solution_manager.increment_expanded();
+        self.solution_manager
+            .increment_expanded(node.bound(&self.generator.model));
         let n_ranks = self.communicator.size() as u64;
         let this_rank = self.communicator.rank();
         let mut better_goal_found = false;
@@ -1068,5 +1110,9 @@ where
         local_dual_bound: Option<T>,
     ) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
         self.solution_manager.finalize(local_dual_bound)
+    }
+
+    pub fn gather_bound_to_expanded(&self) -> Vec<KeyValueStatistics<T, usize>> {
+        self.solution_manager.gather_bound_to_expanded()
     }
 }

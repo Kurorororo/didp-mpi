@@ -17,8 +17,10 @@ use dypdl_heuristic_search::{
 use mpi::{environment::Universe, traits::*};
 use std::fmt::{Debug, Display};
 use std::fs;
+use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
+use yaml_rust::{Yaml, YamlEmitter};
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -33,8 +35,9 @@ fn main_with_cost_type_and_hash_function<T, H>(
     mut parameters: Parameters<T>,
     f_evaluator_type: FEvaluatorType,
     hash_function: H,
+    count_bound_to_expanded: bool,
 ) where
-    T: Numeric + IsFloat + Ord + Display,
+    T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     H: Fn(&HashableSignatureVariables) -> u64,
@@ -93,10 +96,11 @@ fn main_with_cost_type_and_hash_function<T, H>(
         controller_rank: 0,
         solution_filename,
         history_filename,
+        count_bound_to_expanded,
         parameters,
     };
 
-    let solver = HdBestFirstSearch::new(
+    let mut solver = HdBestFirstSearch::new(
         input,
         transition_evaluator,
         base_cost_evaluator,
@@ -111,11 +115,27 @@ fn main_with_cost_type_and_hash_function<T, H>(
         let statistics_yaml = serde_yaml::to_string(&statistics_list).unwrap();
         fs::write("statistics.yaml", statistics_yaml).unwrap();
     }
+
+    if count_bound_to_expanded {
+        let bound_to_expanded = solver.gather_bound_to_expanded();
+
+        if communicator.rank() == 0 {
+            let bound_to_expanded =
+                Yaml::Array(bound_to_expanded.into_iter().map(Yaml::from).collect());
+
+            let mut out_str = String::new();
+            {
+                let mut emitter = YamlEmitter::new(&mut out_str);
+                emitter.dump(&bound_to_expanded).unwrap();
+            }
+            fs::write("bound_to_expanded.yaml", out_str).unwrap();
+        }
+    }
 }
 
 fn main_with_cost_type<T>(mut universe: Universe, model: Model, config_filename: &str)
 where
-    T: Numeric + IsFloat + Ord + Display,
+    T: Numeric + IsFloat + Ord + Display + Hash,
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
 {
@@ -136,6 +156,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                additional_parameters.count_bound_to_expanded,
             );
         }
         HashType::SetZobrist => {
@@ -149,6 +170,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                additional_parameters.count_bound_to_expanded,
             );
         }
         HashType::SetZobristWithOthers => {
@@ -162,6 +184,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                additional_parameters.count_bound_to_expanded,
             );
         }
     }
