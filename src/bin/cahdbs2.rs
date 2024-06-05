@@ -137,8 +137,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         solution.expanded = statistics_list.iter().map(|s| s.expanded).sum();
         solution.generated = statistics_list.iter().map(|s| s.generated).sum();
         didp_mpi::dump_solution(&solution);
-        let statistics_yaml = serde_yaml::to_string(&statistics_list).unwrap();
-        fs::write("statistics.yaml", statistics_yaml).unwrap();
+        Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
     }
 }
 

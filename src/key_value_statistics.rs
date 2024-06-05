@@ -3,6 +3,10 @@ use dypdl::variable_type::Numeric;
 use linked_hash_map::LinkedHashMap;
 use mpi::{traits::*, Rank, Tag};
 use std::collections::{BTreeMap, HashMap};
+use std::error::Error;
+use std::fmt::Display;
+use std::fs::OpenOptions;
+use std::io::Write;
 use yaml_rust::Yaml;
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -57,6 +61,32 @@ impl<K: IsFloat> From<KeyValueStatistics<K, usize>> for Yaml {
         }
 
         Yaml::Array(array)
+    }
+}
+
+impl<K, V> KeyValueStatistics<K, V>
+where
+    K: Display,
+    V: Display,
+{
+    pub fn dump_to_csv(list: &[Self], filename: &str) -> Result<(), Box<dyn Error>> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(filename)?;
+
+        let line = "rank,key,value\n";
+        file.write_all(line.as_bytes())?;
+
+        for (rank, statistics) in list.iter().enumerate() {
+            for (k, v) in statistics.keys.iter().zip(statistics.values.iter()) {
+                let line = format!("{},{},{}\n", rank, k, v);
+                file.write_all(line.as_bytes())?;
+            }
+        }
+
+        Ok(())
     }
 }
 

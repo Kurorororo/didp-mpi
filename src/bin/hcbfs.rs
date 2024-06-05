@@ -17,7 +17,7 @@ use std::{
     fmt::{Debug, Display},
     fs::OpenOptions,
 };
-use yaml_rust::{Yaml, YamlEmitter, YamlLoader};
+use yaml_rust::{Yaml, YamlLoader};
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -121,14 +121,7 @@ where
 
     if count_bound_to_expanded {
         let bound_to_expanded = KeyValueStatistics::from(solver.get_bound_to_expanded());
-        let bound_to_expanded = Yaml::Array(vec![bound_to_expanded.into()]);
-
-        let mut out_str = String::new();
-        {
-            let mut emitter = YamlEmitter::new(&mut out_str);
-            emitter.dump(&bound_to_expanded).unwrap();
-        }
-        fs::write("bound_to_expanded.yaml", out_str).unwrap();
+        KeyValueStatistics::dump_to_csv(&[bound_to_expanded], "bound_to_expanded.csv").unwrap();
     }
 }
 

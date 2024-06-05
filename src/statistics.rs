@@ -1,4 +1,9 @@
-use std::ops::{Add, AddAssign};
+use std::{
+    error::Error,
+    fs::OpenOptions,
+    io::Write,
+    ops::{Add, AddAssign},
+};
 
 use mpi::{collective::SystemOperation, traits::*, Rank, Tag};
 use serde::Serialize;
@@ -37,6 +42,32 @@ impl AddAssign for Statistics {
 }
 
 impl Statistics {
+    pub fn dump_to_csv(list: &[Self], filename: &str) -> Result<(), Box<dyn Error>> {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(filename)?;
+
+        let line = "rank,expanded,generated,sent,kept,received\n";
+        file.write_all(line.as_bytes())?;
+
+        for (rank, statistics) in list.iter().enumerate() {
+            let line = format!(
+                "{},{},{},{},{},{}\n",
+                rank,
+                statistics.expanded,
+                statistics.generated,
+                statistics.sent,
+                statistics.kept,
+                statistics.received
+            );
+            file.write_all(line.as_bytes())?;
+        }
+
+        Ok(())
+    }
+
     pub fn send<C: Communicator>(&self, communicator: &C, destination_rank: Rank, tag: Tag) {
         let buffer = [
             self.expanded,

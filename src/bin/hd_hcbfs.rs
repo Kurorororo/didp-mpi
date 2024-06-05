@@ -1,6 +1,6 @@
 use didp_mpi::{
     AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType, HdHcbfs,
-    IsFloat, MpiAnytimeSearchParameters,
+    IsFloat, KeyValueStatistics, MpiAnytimeSearchParameters, Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -20,7 +20,6 @@ use std::fs;
 use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
-use yaml_rust::{Yaml, YamlEmitter};
 
 #[cfg(not(target_env = "msvc"))]
 use tikv_jemallocator::Jemalloc;
@@ -112,23 +111,14 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     if communicator.rank() == 0 {
         didp_mpi::dump_solution(&solution);
-        let statistics_yaml = serde_yaml::to_string(&statistics_list).unwrap();
-        fs::write("statistics.yaml", statistics_yaml).unwrap();
+        Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
     }
 
     if count_bound_to_expanded {
         let bound_to_expanded = solver.gather_bound_to_expanded();
 
         if communicator.rank() == 0 {
-            let bound_to_expanded =
-                Yaml::Array(bound_to_expanded.into_iter().map(Yaml::from).collect());
-
-            let mut out_str = String::new();
-            {
-                let mut emitter = YamlEmitter::new(&mut out_str);
-                emitter.dump(&bound_to_expanded).unwrap();
-            }
-            fs::write("bound_to_expanded.yaml", out_str).unwrap();
+            KeyValueStatistics::dump_to_csv(&bound_to_expanded, "bound_to_expanded.csv").unwrap();
         }
     }
 }
