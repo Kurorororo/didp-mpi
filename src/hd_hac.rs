@@ -20,7 +20,7 @@ use crate::{
     bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
 };
 
-pub struct HdHcbfs<'a, T, N, M, E, B, F, V = Transition>
+pub struct HdHac<'a, T, N, M, E, B, F, V = Transition>
 where
     T: Numeric + IsFloat + Ord + Display,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
@@ -41,7 +41,7 @@ where
     is_terminated: bool,
 }
 
-impl<'a, T, N, M, E, B, F, V> HdHcbfs<'a, T, N, M, E, B, F, V>
+impl<'a, T, N, M, E, B, F, V> HdHac<'a, T, N, M, E, B, F, V>
 where
     T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
@@ -70,7 +70,7 @@ where
         parameters: MpiAnytimeSearchParameters<T>,
         hash_function: F,
         communicator: &'a SimpleCommunicator,
-    ) -> HdHcbfs<'a, T, N, M, E, B, F, V> {
+    ) -> HdHac<'a, T, N, M, E, B, F, V> {
         let model = input.generator.model.clone();
         let mut search = MpiAnytimeSearch::new(
             input.generator,

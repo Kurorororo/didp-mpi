@@ -1,5 +1,5 @@
 use didp_mpi::{
-    AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType, HdHcbfs,
+    AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType, HdHac,
     IsFloat, KeyValueStatistics, MpiAnytimeSearchParameters, Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
@@ -106,7 +106,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         parameters,
     };
 
-    let mut solver = HdHcbfs::new(
+    let mut solver = HdHac::new(
         input,
         transition_evaluator,
         base_cost_evaluator,

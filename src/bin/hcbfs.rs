@@ -1,4 +1,4 @@
-use didp_mpi::{Hcbfs, IsFloat, KeyValueStatistics};
+use didp_mpi::{Hac, IsFloat, KeyValueStatistics};
 use didp_yaml::heuristic_search_solver::{CostToDump, SolutionToDump};
 use dypdl::{
     prelude::*,
@@ -107,7 +107,7 @@ where
             )
         };
 
-    let mut solver = Hcbfs::new(
+    let mut solver = Hac::new(
         input,
         transition_evaluator,
         base_cost_evaluator,

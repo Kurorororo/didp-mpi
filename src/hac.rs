@@ -15,7 +15,7 @@ use std::fmt;
 use std::hash::Hash;
 use std::rc::Rc;
 
-pub struct Hcbfs<'a, T, N, E, B, V = Transition>
+pub struct Hac<'a, T, N, E, B, V = Transition>
 where
     T: Numeric + Ord + fmt::Display + Hash,
     N: BfsNode<T, V>,
@@ -42,7 +42,7 @@ where
     solution: Solution<T>,
 }
 
-impl<'a, T, N, E, B, V> Hcbfs<'a, T, N, E, B, V>
+impl<'a, T, N, E, B, V> Hac<'a, T, N, E, B, V>
 where
     T: Numeric + Ord + fmt::Display + Hash,
     N: BfsNode<T, V>,
@@ -58,7 +58,7 @@ where
         base_cost_evaluator: B,
         parameters: Parameters<T>,
         count_bound_to_expanded: bool,
-    ) -> Hcbfs<'a, T, N, E, B, V> {
+    ) -> Hac<'a, T, N, E, B, V> {
         let time_keeper = parameters
             .time_limit
             .map_or_else(TimeKeeper::default, TimeKeeper::with_time_limit);
@@ -91,7 +91,7 @@ where
             solution.is_infeasible = true;
         }
 
-        Hcbfs {
+        Hac {
             generator: input.generator,
             suffix: input.solution_suffix,
             transition_evaluator,
@@ -202,7 +202,7 @@ where
     }
 }
 
-impl<'a, T, N, E, B, V> Search<T> for Hcbfs<'a, T, N, E, B, V>
+impl<'a, T, N, E, B, V> Search<T> for Hac<'a, T, N, E, B, V>
 where
     T: Numeric + Ord + fmt::Display + Hash,
     N: BfsNode<T, V>,
