@@ -615,6 +615,14 @@ where
                         &reverse_transition_forced,
                     );
 
+                    if !self.quiet {
+                        println!(
+                            "Updated solution in rank: {}, cost: {}",
+                            self.communicator.rank(),
+                            cost
+                        );
+                    }
+
                     if self.communicator.rank() != self.root_rank {
                         self.send_solution();
                     }
@@ -681,6 +689,14 @@ where
                     &reverse_transition_forced,
                 );
 
+                if !self.quiet {
+                    println!(
+                        "Updated solution in rank: {}, cost: {}",
+                        self.communicator.rank(),
+                        self.solution.cost.unwrap()
+                    );
+                }
+
                 if self.communicator.rank() != self.root_rank {
                     self.send_solution();
                 }
@@ -745,6 +761,12 @@ where
                     if !data_structure::exceed_bound(model, dual_bound, global_dual_bound) {
                         global_dual_bound = Some(dual_bound);
                     }
+                }
+            }
+
+            if let Some(value) = global_dual_bound {
+                if data_structure::exceed_bound(model, value, self.primal_bound) {
+                    global_dual_bound = self.primal_bound;
                 }
             }
 

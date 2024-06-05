@@ -140,6 +140,21 @@ where
         Some(node)
     }
 
+    pub fn receive_and_discard(&mut self, source_rank: Rank, dual_bound: Option<T>) -> Option<T> {
+        self.communicator
+            .receive_into(&mut self.tmp_buffer, source_rank);
+
+        if let Some(bound) = M::get_bound(&self.model, &self.state_serializer, &self.tmp_buffer) {
+            if data_structure::exceed_bound(&self.model, bound, dual_bound) {
+                None
+            } else {
+                Some(bound)
+            }
+        } else {
+            None
+        }
+    }
+
     pub fn initiate_termination(&mut self, destination_rank: Rank) {
         self.communicator.initiate_termination(destination_rank);
     }
@@ -238,6 +253,21 @@ where
                 .unwrap();
 
         Some((node, depth))
+    }
+
+    pub fn receive_and_discard(&mut self, source_rank: Rank, dual_bound: Option<T>) -> Option<T> {
+        self.communicator
+            .receive_into(&mut self.tmp_buffer, source_rank);
+
+        if let Some(bound) = M::get_bound(&self.model, &self.state_serializer, &self.tmp_buffer) {
+            if data_structure::exceed_bound(&self.model, bound, dual_bound) {
+                None
+            } else {
+                Some(bound)
+            }
+        } else {
+            None
+        }
     }
 
     pub fn initiate_termination(&mut self, destination_rank: Rank) {

@@ -78,6 +78,12 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     let communicator = universe.world();
 
+    if communicator.rank() == 0 && !parameters.beam_search_parameters.parameters.quiet {
+        if let Some(node) = &input.node {
+            println!("Initial dual bound: {}", node.bound(&input.generator.model));
+        }
+    }
+
     if communicator.rank() == 0 {
         let mut file = OpenOptions::new()
             .create(true)

@@ -62,6 +62,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         &f_evaluator,
         parameters.primal_bound,
     );
+
     let input = SearchInput {
         node,
         generator,
@@ -78,6 +79,12 @@ fn main_with_cost_type_and_hash_function<T, H>(
     };
 
     let communicator = universe.world();
+
+    if communicator.rank() == 0 && !parameters.quiet {
+        if let Some(node) = &input.node {
+            println!("Initial dual bound: {}", node.bound(&input.generator.model));
+        }
+    }
 
     let solution_filename = if communicator.rank() == 0 {
         Some(String::from("solution.yaml"))

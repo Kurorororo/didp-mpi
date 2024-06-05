@@ -35,6 +35,7 @@ where
     progressive_parameters: ProgressiveSearchParameters,
     width: usize,
     open: Vec<BinaryHeap<Rc<N>>>,
+    local_dual_bound: Option<T>,
     is_time_out: bool,
     n_remaining_time_out_ack: usize,
     is_checking_termination: bool,
@@ -104,6 +105,7 @@ where
             progressive_parameters,
             width: progressive_parameters.init,
             open,
+            local_dual_bound: None,
             is_time_out: false,
             n_remaining_time_out_ack: 0,
             is_checking_termination: false,
@@ -114,7 +116,14 @@ where
     fn receive_node(&mut self, source_rank: Rank) {
         self.search.increment_received();
 
-        if let Some((node, depth)) = self
+        if self.is_time_out {
+            if let Some(bound) = self
+                .node_communicator
+                .receive_and_discard(source_rank, self.local_dual_bound)
+            {
+                self.local_dual_bound = Some(bound);
+            }
+        } else if let Some((node, depth)) = self
             .node_communicator
             .receive(source_rank, self.search.get_primal_bound())
         {
@@ -146,6 +155,7 @@ where
         let source_process = self.communicator.process_at_rank(source_rank);
         source_process.receive_into_with_tag(&mut buffer, Self::TAG_TIME_OUT);
         self.is_time_out = true;
+        self.local_dual_bound = self.compute_local_dual_bound();
         source_process.buffered_send_with_tag(&buffer, Self::TAG_TIME_OUT_ACK);
     }
 
@@ -215,6 +225,19 @@ where
         }
     }
 
+    fn compute_local_dual_bound(&self) -> Option<T> {
+        let dual_bound_iter = self
+            .open
+            .iter()
+            .filter_map(|o| o.peek().and_then(|n| n.bound(&self.model)));
+
+        if self.model.reduce_function == ReduceFunction::Max {
+            dual_bound_iter.max()
+        } else {
+            dual_bound_iter.min()
+        }
+    }
+
     pub fn search(&mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
         let mut current_depth = 0;
         let mut no_node = true;
@@ -236,6 +259,7 @@ where
                     && self.search.check_time_limit()
                 {
                     self.is_time_out = true;
+                    self.local_dual_bound = self.compute_local_dual_bound();
                     self.broadcast_time_out();
                     break 'outer;
                 }
@@ -341,20 +365,9 @@ where
             }
         }
 
-        let dual_bound_iter = self
-            .open
-            .iter()
-            .filter_map(|o| o.peek().and_then(|n| n.bound(&self.model)));
-
-        let dual_bound = if self.model.reduce_function == ReduceFunction::Max {
-            dual_bound_iter.max()
-        } else {
-            dual_bound_iter.min()
-        };
-
         self.communicator.barrier();
 
-        let (mut solution, statistics) = self.search.finalize(dual_bound);
+        let (mut solution, statistics) = self.search.finalize(self.local_dual_bound);
 
         if self.is_time_out {
             solution.time_out = true;
@@ -367,6 +380,10 @@ where
             if solution.is_optimal {
                 solution.best_bound = solution.cost;
             }
+        }
+
+        if !solution.is_optimal && solution.cost.is_some() && solution.cost == solution.best_bound {
+            solution.is_optimal = true;
         }
 
         solution.time = self.search.elapsed_time();
