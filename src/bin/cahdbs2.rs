@@ -143,6 +143,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         solution.expanded = statistics_list.iter().map(|s| s.expanded).sum();
         solution.generated = statistics_list.iter().map(|s| s.generated).sum();
         didp_mpi::dump_solution(&solution);
+        didp_mpi::dump_statistics(&statistics_list);
         Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
     }
 }

@@ -401,6 +401,14 @@ where
         self.statistics.kept += 1;
     }
 
+    pub fn increment_dominated_before_closed(&mut self) {
+        self.statistics.dominated_before_closed += 1;
+    }
+
+    pub fn increment_dominated_after_closed(&mut self) {
+        self.statistics.dominated_after_closed += 1;
+    }
+
     pub fn update_dual_bound(&mut self, dual_bound: T) {
         self.solution.best_bound = Some(dual_bound);
 
@@ -987,6 +995,9 @@ where
         for d in result.dominated.iter() {
             if !d.is_closed() {
                 d.close();
+                solution_manager.increment_dominated_before_closed();
+            } else {
+                solution_manager.increment_dominated_after_closed();
             }
         }
 

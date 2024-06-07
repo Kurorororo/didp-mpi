@@ -119,6 +119,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     if communicator.rank() == 0 {
         didp_mpi::dump_solution(&solution);
+        didp_mpi::dump_statistics(&statistics_list);
         Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
     }
 

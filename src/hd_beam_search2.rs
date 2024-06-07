@@ -379,6 +379,7 @@ where
     }
 
     let mut expanded = 0;
+    let mut dominated_before_closed = 0;
     let mut layer_index = 0;
 
     let mut pruned = false;
@@ -656,6 +657,8 @@ where
                                 pruned = true;
                             }
 
+                            dominated_before_closed += status.dominated.len();
+
                             if let Some(bound) = node_bound {
                                 if !data_structure::exceed_bound(model, bound, layer_dual_bound) {
                                     layer_dual_bound = Some(bound);
@@ -744,6 +747,8 @@ where
                 sent,
                 kept,
                 received,
+                dominated_before_closed,
+                dominated_after_closed: 0,
             };
 
             // Found a solution.

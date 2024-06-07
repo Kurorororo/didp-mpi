@@ -12,6 +12,8 @@ use std::process;
 use std::str::FromStr;
 use yaml_rust::{Yaml, YamlLoader};
 
+use crate::Statistics;
+
 pub fn read_model(args: &mut Args) -> Model {
     let domain = args.next().unwrap_or_else(|| {
         eprintln!("Didn't get a domain file name.");
@@ -112,6 +114,24 @@ where
     println!("Expanded: {}", expanded);
     println!("Generated: {}", generated);
     println!("Search time: {}s", search_time);
+}
+
+pub fn dump_statistics(statistics_list: &[Statistics]) {
+    let kept: usize = statistics_list.iter().map(|s| s.kept).sum();
+    let sent: usize = statistics_list.iter().map(|s| s.sent).sum();
+    let dominated_before_closed: usize = statistics_list
+        .iter()
+        .map(|s| s.dominated_before_closed)
+        .sum();
+    let dominated_after_closed: usize = statistics_list
+        .iter()
+        .map(|s| s.dominated_after_closed)
+        .sum();
+
+    println!("Kept: {}", kept);
+    println!("Sent: {}", sent);
+    println!("Dominated before closed: {}", dominated_before_closed);
+    println!("Dominated after closed: {}", dominated_after_closed);
 }
 
 pub fn load_parameters_from_map<T: Numeric>(map: &LinkedHashMap<Yaml, Yaml>) -> Parameters<T>

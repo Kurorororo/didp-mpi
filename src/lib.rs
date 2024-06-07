@@ -33,7 +33,7 @@ pub use hd_beam_search2::hd_beam_search2;
 pub use hd_best_first_search::HdBestFirstSearch;
 pub use hd_hac::HdHac;
 pub use io::{
-    dump_solution, load_parameters_from_map, read_model, write_solution,
+    dump_solution, dump_statistics, load_parameters_from_map, read_model, write_solution,
     AdditionalCommonParameters, HashType,
 };
 pub use is_float::IsFloat;
