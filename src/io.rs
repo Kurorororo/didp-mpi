@@ -127,11 +127,31 @@ pub fn dump_statistics(statistics_list: &[Statistics]) {
         .iter()
         .map(|s| s.dominated_after_closed)
         .sum();
+    let max_expanded = statistics_list.iter().map(|s| s.expanded).max();
+    let min_expanded = statistics_list.iter().map(|s| s.expanded).min();
+    let max_received = statistics_list.iter().map(|s| s.received).max();
+    let min_received = statistics_list.iter().map(|s| s.received).min();
 
     println!("Kept: {}", kept);
     println!("Sent: {}", sent);
     println!("Dominated before closed: {}", dominated_before_closed);
     println!("Dominated after closed: {}", dominated_after_closed);
+
+    if let Some(max_expanded) = max_expanded {
+        println!("Max expanded: {}", max_expanded);
+    }
+
+    if let Some(min_expanded) = min_expanded {
+        println!("Min expanded: {}", min_expanded);
+    }
+
+    if let Some(max_received) = max_received {
+        println!("Max received: {}", max_received);
+    }
+
+    if let Some(min_received) = min_received {
+        println!("Min received: {}", min_received);
+    }
 }
 
 pub fn load_parameters_from_map<T: Numeric>(map: &LinkedHashMap<Yaml, Yaml>) -> Parameters<T>
