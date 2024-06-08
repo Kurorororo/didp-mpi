@@ -6,9 +6,9 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-dypdl = { path = "../didp-rs/dypdl" }
-dypdl-heuristic-search = { path = "../didp-rs/dypdl-heuristic-search" }
-didp-yaml = { path = "../didp-rs/didp-yaml" }
+dypdl = "0.8"
+dypdl-heuristic-search = "0.8"
+didp-yaml = "0.8"
 mpi = "0.8"
 zerocopy = "0.7"
 yaml-rust = "0.4"
