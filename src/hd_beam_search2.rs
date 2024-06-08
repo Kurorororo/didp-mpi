@@ -380,6 +380,10 @@ where
 
     let mut expanded = 0;
     let mut dominated_before_closed = 0;
+    let mut first_expanded_timestamp = 0.0;
+    let mut last_expanded_timestamp = 0.0;
+    let mut first_received_timestamp = 0.0;
+    let mut last_received_timestamp = 0.0;
     let mut layer_index = 0;
 
     let mut pruned = false;
@@ -535,6 +539,12 @@ where
                             continue;
                         }
 
+                        last_expanded_timestamp = time_keeper.elapsed_time();
+
+                        if expanded == 0 {
+                            first_expanded_timestamp = last_expanded_timestamp;
+                        }
+
                         expanded += 1;
 
                         let mut no_successor = true;
@@ -640,8 +650,14 @@ where
                 if received_all < n_ranks - 1 {
                     // Receives a node.
                     while let Some(status) = any_process.immediate_probe_with_tag(TAG_NODE) {
-                        let source_rank = status.source_rank();
+                        last_received_timestamp = time_keeper.elapsed_time();
+
+                        if received == 0 {
+                            first_received_timestamp = last_received_timestamp;
+                        }
+
                         received += 1;
+                        let source_rank = status.source_rank();
                         source_to_counter[source_rank as usize] += 1;
 
                         if source_to_counter[source_rank as usize] == 0 {
@@ -749,6 +765,10 @@ where
                 received,
                 dominated_before_closed,
                 dominated_after_closed: 0,
+                first_expanded_timestamp,
+                last_expanded_timestamp,
+                first_received_timestamp,
+                last_received_timestamp,
             };
 
             // Found a solution.

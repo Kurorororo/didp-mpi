@@ -371,6 +371,12 @@ where
     }
 
     pub fn increment_expanded(&mut self, bound: Option<T>) {
+        self.statistics.last_expanded_timestamp = self.time_keeper.elapsed_time();
+
+        if self.statistics.expanded == 0 {
+            self.statistics.first_expanded_timestamp = self.statistics.last_expanded_timestamp;
+        }
+
         self.solution.expanded += 1;
         self.statistics.expanded += 1;
 
@@ -394,6 +400,12 @@ where
     }
 
     pub fn increment_received(&mut self) {
+        self.statistics.last_received_timestamp = self.time_keeper.elapsed_time();
+
+        if self.statistics.received == 0 {
+            self.statistics.first_received_timestamp = self.statistics.last_received_timestamp;
+        }
+
         self.statistics.received += 1;
     }
 
