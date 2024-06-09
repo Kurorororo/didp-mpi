@@ -16,7 +16,7 @@ pub fn create_fx_hash() -> impl Fn(&HashableSignatureVariables) -> u64 {
     }
 }
 
-fn create_random_table(model: &Model, seed: u64) -> Vec<Vec<u64>> {
+fn create_per_element_random_table(model: &Model, seed: u64) -> Vec<Vec<Vec<u64>>> {
     let mut rng = Pcg64Mcg::seed_from_u64(seed);
     let n = model.state_metadata.number_of_set_variables();
     let mut random_table = Vec::with_capacity(n);
@@ -24,18 +24,20 @@ fn create_random_table(model: &Model, seed: u64) -> Vec<Vec<u64>> {
     for i in 0..n {
         let object_id = model.state_metadata.set_variable_to_object[i];
         let m = model.state_metadata.object_numbers[object_id];
-        let random_row = (0..m).map(|_| rng.gen::<u64>()).collect::<Vec<_>>();
+        let random_row = (0..m)
+            .map(|_| vec![rng.gen::<u64>(), rng.gen::<u64>()])
+            .collect::<Vec<_>>();
         random_table.push(random_row);
     }
 
     random_table
 }
 
-fn create_abstracted_random_table(
+fn create_abstracted_per_element_random_table(
     model: &Model,
     seed: u64,
     zero_probability: f64,
-) -> Vec<Vec<u64>> {
+) -> Vec<Vec<Vec<u64>>> {
     let mut rng = Pcg64Mcg::seed_from_u64(seed);
     let n = model.state_metadata.number_of_set_variables();
     let mut random_table = Vec::with_capacity(n);
@@ -46,9 +48,10 @@ fn create_abstracted_random_table(
         let random_row = (0..m)
             .map(|_| {
                 if rng.gen_bool(zero_probability) {
-                    0
+                    let rand = rng.gen::<u64>();
+                    vec![rand, rand]
                 } else {
-                    rng.gen::<u64>()
+                    vec![rng.gen::<u64>(), rng.gen::<u64>()]
                 }
             })
             .collect::<Vec<_>>();
@@ -58,12 +61,21 @@ fn create_abstracted_random_table(
     random_table
 }
 
-fn set_zobrist_hash(random_table: &[Vec<u64>], set_variables: &[Set]) -> u64 {
+fn set_per_element_zobrist_hash(random_table: &[Vec<Vec<u64>>], set_variables: &[Set]) -> u64 {
     let mut hash_value = 0;
 
     for (v, row) in set_variables.iter().zip(random_table.iter()) {
+        let mut last_one_index = None;
+
         for i in v.ones() {
-            hash_value ^= row[i];
+            let last_zero_index = last_one_index.map_or(0, |index| index + 1);
+
+            for r in row.iter().take(i).skip(last_zero_index) {
+                hash_value ^= r[0];
+            }
+
+            hash_value ^= row[i][1];
+            last_one_index = Some(i);
         }
     }
 
@@ -77,13 +89,13 @@ pub fn create_set_zobrist_hash(
     const SEED: u64 = 42;
 
     let random_table = if let Some(p) = zero_probability {
-        create_abstracted_random_table(model, SEED, p)
+        create_abstracted_per_element_random_table(model, SEED, p)
     } else {
-        create_random_table(model, SEED)
+        create_per_element_random_table(model, SEED)
     };
 
     move |signature: &HashableSignatureVariables| -> u64 {
-        set_zobrist_hash(&random_table, &signature.set_variables)
+        set_per_element_zobrist_hash(&random_table, &signature.set_variables)
     }
 }
 
@@ -94,14 +106,14 @@ pub fn create_set_zobrist_hash_with_others(
     const SEED: u64 = 42;
 
     let random_table = if let Some(p) = zero_probability {
-        create_abstracted_random_table(model, SEED, p)
+        create_abstracted_per_element_random_table(model, SEED, p)
     } else {
-        create_random_table(model, SEED)
+        create_per_element_random_table(model, SEED)
     };
 
     move |signature: &HashableSignatureVariables| -> u64 {
         let mut hasher = FxHasher::default();
-        let value = set_zobrist_hash(&random_table, &signature.set_variables);
+        let value = set_per_element_zobrist_hash(&random_table, &signature.set_variables);
         hasher.write_u64(value);
 
         signature.element_variables.hash(&mut hasher);
