@@ -61,21 +61,108 @@ fn create_abstracted_per_element_random_table(
     random_table
 }
 
-fn set_per_element_zobrist_hash(random_table: &[Vec<Vec<u64>>], set_variables: &[Set]) -> u64 {
+// fn precompute_consecutive_xor(random_table: &[Vec<Vec<u64>>]) -> Vec<Vec<Vec<Vec<u64>>>> {
+//     let mut result = Vec::with_capacity(random_table.len());
+//
+//     for table in random_table {
+//         let n = table.len();
+//         let mut result_table = Vec::with_capacity(n);
+//
+//         // XOR of j+1 consecutive random numbers starting from index i.
+//         for i in 0..n {
+//             let mut row = Vec::with_capacity(n);
+//
+//             for j in 1..=n - i {
+//                 let r0 = table
+//                     .iter()
+//                     .map(|x| x[0])
+//                     .skip(i)
+//                     .take(j)
+//                     .reduce(|a, b| a ^ b)
+//                     .unwrap();
+//                 let r1 = table
+//                     .iter()
+//                     .map(|x| x[1])
+//                     .skip(i)
+//                     .take(j)
+//                     .reduce(|a, b| a ^ b)
+//                     .unwrap();
+//                 row.push(vec![r0, r1]);
+//             }
+//
+//             result_table.push(row);
+//         }
+//
+//         result.push(result_table);
+//     }
+//
+//     result
+// }
+
+// fn set_per_element_zobrist_hash(random_table: &[Vec<Vec<Vec<u64>>>], set_variables: &[Set]) -> u64 {
+//     let mut hash_value = 0;
+//
+//     for (v, table) in set_variables.iter().zip(random_table.iter()) {
+//         let mut previous_one = None;
+//         let mut consecutive_ones = 1;
+//
+//         for i in v.ones() {
+//             if let Some(previous_one) = previous_one {
+//                 if i == previous_one + 1 {
+//                     consecutive_ones += 1;
+//                 } else {
+//                     let start_one: usize = previous_one - consecutive_ones + 1;
+//                     hash_value ^= table[start_one][consecutive_ones - 1][1];
+//                     let start_zero: usize = previous_one + 1;
+//                     let consecutive_zeros: usize = i - previous_one - 1;
+//                     hash_value ^= table[start_zero][consecutive_zeros - 1][0];
+//                     consecutive_ones = 1;
+//                 }
+//             } else if i > 0 {
+//                 hash_value ^= table[0][i - 1][0];
+//             }
+//
+//             previous_one = Some(i);
+//         }
+//
+//         if let Some(previous_one) = previous_one {
+//             if previous_one < v.len() - 1 {
+//                 let start_zero: usize = previous_one + 1;
+//                 let consecutive_zeros: usize = v.len() - previous_one - 1;
+//                 hash_value ^= table[start_zero][consecutive_zeros - 1][0];
+//             }
+//         } else {
+//             hash_value ^= table[0][v.len() - 1][0];
+//         }
+//     }
+//
+//     hash_value
+// }
+
+fn set_per_element_zobrist_hash_naive(
+    random_table: &[Vec<Vec<u64>>],
+    set_variables: &[Set],
+) -> u64 {
     let mut hash_value = 0;
 
-    for (v, row) in set_variables.iter().zip(random_table.iter()) {
-        let mut last_one_index = None;
+    for (v, table) in set_variables.iter().zip(random_table.iter()) {
+        let mut previous_one = None;
 
         for i in v.ones() {
-            let last_zero_index = last_one_index.map_or(0, |index| index + 1);
+            let previous_zero = previous_one.map_or(0, |x| x + 1);
 
-            for r in row.iter().take(i).skip(last_zero_index) {
+            for r in &table[previous_zero..i] {
                 hash_value ^= r[0];
             }
 
-            hash_value ^= row[i][1];
-            last_one_index = Some(i);
+            hash_value ^= table[i][1];
+            previous_one = Some(i);
+        }
+
+        let previous_zero = previous_one.map_or(0, |x| x + 1);
+
+        for r in &table[previous_zero..] {
+            hash_value ^= r[0];
         }
     }
 
@@ -93,9 +180,11 @@ pub fn create_set_zobrist_hash(
     } else {
         create_per_element_random_table(model, SEED)
     };
+    //let random_table = precompute_consecutive_xor(&random_table);
 
     move |signature: &HashableSignatureVariables| -> u64 {
-        set_per_element_zobrist_hash(&random_table, &signature.set_variables)
+        //set_per_element_zobrist_hash(&random_table, &signature.set_variables)
+        set_per_element_zobrist_hash_naive(&random_table, &signature.set_variables)
     }
 }
 
@@ -110,10 +199,12 @@ pub fn create_set_zobrist_hash_with_others(
     } else {
         create_per_element_random_table(model, SEED)
     };
+    //let random_table = precompute_consecutive_xor(&random_table);
 
     move |signature: &HashableSignatureVariables| -> u64 {
         let mut hasher = FxHasher::default();
-        let value = set_per_element_zobrist_hash(&random_table, &signature.set_variables);
+        //let value = set_per_element_zobrist_hash(&random_table, &signature.set_variables);
+        let value = set_per_element_zobrist_hash_naive(&random_table, &signature.set_variables);
         hasher.write_u64(value);
 
         signature.element_variables.hash(&mut hasher);
