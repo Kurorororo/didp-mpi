@@ -15,6 +15,86 @@ use std::fmt;
 use std::hash::Hash;
 use std::rc::Rc;
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct HacParameters<T> {
+    pub initial_consecutive_best_first_turns: usize,
+    pub delta_consecutive_best_first_turns: usize,
+    pub absolute_gap_threshold: T,
+    pub relative_gap_threshold: Continuous,
+}
+
+impl<T: Numeric> Default for HacParameters<T> {
+    fn default() -> Self {
+        HacParameters {
+            initial_consecutive_best_first_turns: 1,
+            delta_consecutive_best_first_turns: 0,
+            absolute_gap_threshold: T::zero(),
+            relative_gap_threshold: 0.0,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct HacPolicy<T> {
+    pub parameters: HacParameters<T>,
+    pub n_consecutive_best_first_turns: usize,
+    pub max_consecutive_best_first_turns: usize,
+}
+
+impl<T> From<HacParameters<T>> for HacPolicy<T> {
+    fn from(parameters: HacParameters<T>) -> Self {
+        let max_consecutive_best_first_turns = parameters.initial_consecutive_best_first_turns;
+
+        HacPolicy {
+            parameters,
+            n_consecutive_best_first_turns: 0,
+            max_consecutive_best_first_turns,
+        }
+    }
+}
+
+impl<T: Numeric> HacPolicy<T> {
+    pub fn is_layered_turn(&mut self, primal_bound: Option<T>, dual_bound: Option<T>) -> bool {
+        if let (Some(primal_bound), Some(dual_bound)) = (primal_bound, dual_bound) {
+            let absolute_gap = (primal_bound - dual_bound).abs();
+
+            if absolute_gap <= self.parameters.absolute_gap_threshold {
+                self.n_consecutive_best_first_turns += 1;
+                return false;
+            }
+
+            let larger_bound = if primal_bound > dual_bound {
+                primal_bound
+            } else {
+                dual_bound
+            };
+
+            let relative_gap = absolute_gap.to_continuous() / larger_bound.to_continuous();
+
+            if relative_gap <= self.parameters.relative_gap_threshold {
+                self.n_consecutive_best_first_turns += 1;
+                return false;
+            }
+        }
+
+        if self.n_consecutive_best_first_turns >= self.max_consecutive_best_first_turns {
+            self.n_consecutive_best_first_turns = 0;
+            true
+        } else {
+            self.n_consecutive_best_first_turns += 1;
+            false
+        }
+    }
+
+    pub fn notify_not_layered_turn(&mut self) {
+        self.n_consecutive_best_first_turns += 1;
+    }
+
+    pub fn update_max_consecutive_best_first_turns(&mut self) {
+        self.max_consecutive_best_first_turns += self.parameters.delta_consecutive_best_first_turns;
+    }
+}
+
 pub struct Hac<'a, T, N, E, B, V = Transition>
 where
     T: Numeric + Ord + fmt::Display + Hash,
@@ -34,7 +114,7 @@ where
     open: BinaryHeap<(Rc<N>, usize)>,
     layered_open: Vec<BinaryHeap<Rc<N>>>,
     registry: StateRegistry<T, N>,
-    is_layered_turn: bool,
+    hac_policy: HacPolicy<T>,
     current_depth: usize,
     time_keeper: TimeKeeper,
     count_bound_to_expanded: bool,
@@ -57,6 +137,7 @@ where
         transition_evaluator: E,
         base_cost_evaluator: B,
         parameters: Parameters<T>,
+        hac_parameters: HacParameters<T>,
         count_bound_to_expanded: bool,
     ) -> Hac<'a, T, N, E, B, V> {
         let time_keeper = parameters
@@ -102,7 +183,7 @@ where
             open,
             layered_open,
             registry,
-            is_layered_turn: false,
+            hac_policy: HacPolicy::from(hac_parameters),
             current_depth: 0,
             time_keeper,
             count_bound_to_expanded,
@@ -165,7 +246,15 @@ where
     }
 
     fn pop_node_and_depth(&mut self) -> Option<(Rc<N>, usize)> {
-        if self.is_layered_turn {
+        let dual_bound = self
+            .open
+            .peek()
+            .and_then(|(node, _)| node.bound(&self.generator.model));
+
+        if self
+            .hac_policy
+            .is_layered_turn(self.primal_bound, dual_bound)
+        {
             if self.current_depth > self.layered_open.len() - 1 {
                 self.current_depth = 0;
             }
@@ -177,8 +266,6 @@ where
                 self.current_depth += 1;
 
                 if result.is_some() {
-                    self.is_layered_turn = false;
-
                     return result;
                 } else {
                     if self.current_depth > self.layered_open.len() - 1 {
@@ -190,9 +277,9 @@ where
                     }
                 }
             }
-        }
 
-        self.is_layered_turn = true;
+            self.hac_policy.notify_not_layered_turn();
+        }
 
         self.pop_from_open()
     }
@@ -226,6 +313,7 @@ where
                 get_solution_cost_and_suffix(model, &*node, suffix, &mut self.base_cost_evaluator)
             {
                 if !data_structure::exceed_bound(model, cost, self.primal_bound) {
+                    self.hac_policy.update_max_consecutive_best_first_turns();
                     self.primal_bound = Some(cost);
                     let time = self.time_keeper.elapsed_time();
                     util::update_solution(

@@ -1,6 +1,6 @@
 use didp_mpi::{
-    AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType, HdHac,
-    IsFloat, KeyValueStatistics, MpiAnytimeSearchParameters, Statistics,
+    AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HacParameters, HashType,
+    HdHac, IsFloat, KeyValueStatistics, MpiAnytimeSearchParameters, Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -33,6 +33,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     model: Model,
     mut parameters: Parameters<T>,
     f_evaluator_type: FEvaluatorType,
+    hac_parameters: HacParameters<T>,
     hash_function: H,
     count_bound_to_expanded: bool,
 ) where
@@ -111,6 +112,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         transition_evaluator,
         base_cost_evaluator,
         parameters,
+        hac_parameters,
         hash_function,
         &communicator,
     );
@@ -137,7 +139,8 @@ where
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
 {
-    let (parameters, additional_parameters) = load_config_from_file::<T>(config_filename);
+    let (parameters, additional_parameters, hac_parameters) =
+        load_config_from_file::<T>(config_filename);
 
     if let Some(buffer_size) = additional_parameters.buffer_size {
         universe.set_buffer_size(buffer_size);
@@ -153,6 +156,7 @@ where
                 model,
                 parameters,
                 f_evaluator_type,
+                hac_parameters,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
             );
@@ -167,6 +171,7 @@ where
                 model,
                 parameters,
                 f_evaluator_type,
+                hac_parameters,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
             );
@@ -181,6 +186,7 @@ where
                 model,
                 parameters,
                 f_evaluator_type,
+                hac_parameters,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
             );
@@ -188,7 +194,9 @@ where
     }
 }
 
-fn load_config_from_file<T>(filename: &str) -> (Parameters<T>, AdditionalCommonParameters)
+fn load_config_from_file<T>(
+    filename: &str,
+) -> (Parameters<T>, AdditionalCommonParameters, HacParameters<T>)
 where
     T: Numeric,
     <T as FromStr>::Err: Debug,
@@ -204,8 +212,9 @@ where
     let map = yaml.as_hash().expect("Yaml file is not a hash");
     let parameters = didp_mpi::load_parameters_from_map::<T>(map);
     let additional_common_parameters = AdditionalCommonParameters::load_from_map(map);
+    let hac_parameters = didp_mpi::load_hac_parameters_from_map(map);
 
-    (parameters, additional_common_parameters)
+    (parameters, additional_common_parameters, hac_parameters)
 }
 
 fn main() {

@@ -23,7 +23,7 @@ mod timestamped_communicator;
 
 pub use distributed_f_node::DistributedFNode;
 pub use distributed_f_node_message::DistributedFNodeMessage;
-pub use hac::Hac;
+pub use hac::{Hac, HacParameters};
 pub use hash_functions::{
     create_fx_hash, create_set_zobrist_hash, create_set_zobrist_hash_with_others,
 };
@@ -33,8 +33,8 @@ pub use hd_beam_search2::hd_beam_search2;
 pub use hd_best_first_search::HdBestFirstSearch;
 pub use hd_hac::HdHac;
 pub use io::{
-    dump_solution, dump_statistics, load_parameters_from_map, read_model, write_solution,
-    AdditionalCommonParameters, HashType,
+    dump_solution, dump_statistics, load_hac_parameters_from_map, load_parameters_from_map,
+    read_model, write_solution, AdditionalCommonParameters, HashType,
 };
 pub use is_float::IsFloat;
 pub use key_value_statistics::KeyValueStatistics;
