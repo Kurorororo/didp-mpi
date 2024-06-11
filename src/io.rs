@@ -12,7 +12,7 @@ use std::process;
 use std::str::FromStr;
 use yaml_rust::{Yaml, YamlLoader};
 
-use crate::{hac::HacParameters, Statistics};
+use crate::Statistics;
 
 pub fn read_model(args: &mut Args) -> Model {
     let domain = args.next().unwrap_or_else(|| {
@@ -201,7 +201,6 @@ where
         initial_registry_capacity,
     }
 }
-
 pub enum HashType {
     Fx,
     SetZobrist,
@@ -271,56 +270,5 @@ impl AdditionalCommonParameters {
             zobrist_zero_probability,
             count_bound_to_expanded,
         }
-    }
-}
-
-pub fn load_hac_parameters_from_map<T: Numeric>(map: &LinkedHashMap<Yaml, Yaml>) -> HacParameters<T>
-where
-    <T as FromStr>::Err: Debug,
-{
-    let initial_consecutive_best_first_turns =
-        match map.get(&Yaml::from_str("initial_consecutive_best_first_turns")) {
-            Some(Yaml::Integer(value)) => *value as usize,
-            None => 1,
-            value => {
-                panic!(
-                    "expected Integer for `initial_consecutive_best_first_turns`, but found `{:?}`",
-                    value
-                )
-            }
-        };
-
-    let delta_consecutive_best_first_turns =
-        match map.get(&Yaml::from_str("delta_consecutive_best_first_turns")) {
-            Some(Yaml::Integer(value)) => *value as usize,
-            None => 0,
-            value => {
-                panic!(
-                    "expected Integer for `delta_consecutive_best_first_turns`, but found `{:?}`",
-                    value
-                )
-            }
-        };
-
-    let absolute_gap_threshold = match map.get(&yaml_rust::Yaml::from_str("absolute_gap_threshold"))
-    {
-        Some(yaml_rust::Yaml::Integer(value)) => T::from_integer(*value as Integer),
-        Some(yaml_rust::Yaml::Real(value)) => value.parse().unwrap(),
-        None => T::zero(),
-        value => {
-            panic!("expected Integer or Real, but found `{:?}`", value)
-        }
-    };
-
-    let relative_gap_threshold = map
-        .get(&yaml_rust::Yaml::from_str("relative_gap_threshold"))
-        .map(|value| didp_yaml::util::get_numeric(value).unwrap())
-        .unwrap_or(0.0);
-
-    HacParameters {
-        initial_consecutive_best_first_turns,
-        delta_consecutive_best_first_turns,
-        absolute_gap_threshold,
-        relative_gap_threshold,
     }
 }

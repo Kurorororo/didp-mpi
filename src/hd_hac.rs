@@ -11,7 +11,6 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::hac::{HacParameters, HacPolicy};
 use crate::is_float::IsFloat;
 use crate::mpi_anytime_search::{MpiAnytimeSearch, MpiAnytimeSearchParameters};
 use crate::node_communicator::TimeStampedNodeDepthCommunicator;
@@ -34,7 +33,7 @@ where
     open: BinaryHeap<(Rc<N>, usize)>,
     layered_open: Vec<BinaryHeap<Rc<N>>>,
     current_depth: usize,
-    hac_policy: HacPolicy<T>,
+    is_layered_turn: bool,
     local_dual_bound: Option<T>,
     is_time_out: bool,
     n_remaining_time_out_ack: usize,
@@ -69,7 +68,6 @@ where
         transition_evaluator: E,
         base_cost_evaluator: B,
         parameters: MpiAnytimeSearchParameters<T>,
-        hac_parameters: HacParameters<T>,
         hash_function: F,
         communicator: &'a SimpleCommunicator,
     ) -> HdHac<'a, T, N, M, E, B, F, V> {
@@ -106,7 +104,7 @@ where
             open,
             layered_open,
             current_depth: 0,
-            hac_policy: HacPolicy::from(hac_parameters),
+            is_layered_turn: false,
             local_dual_bound: None,
             is_time_out: false,
             n_remaining_time_out_ack: 0,
@@ -282,12 +280,7 @@ where
     }
 
     fn pop_node_and_depth(&mut self) -> Option<(Rc<N>, usize)> {
-        let dual_bound = self.compute_local_dual_bound();
-
-        if self
-            .hac_policy
-            .is_layered_turn(self.search.get_primal_bound(), dual_bound)
-        {
+        if self.is_layered_turn {
             if self.current_depth > self.layered_open.len() - 1 {
                 self.current_depth = 0;
             }
@@ -299,6 +292,8 @@ where
                 self.current_depth += 1;
 
                 if result.is_some() {
+                    self.is_layered_turn = false;
+
                     return result;
                 } else {
                     if self.current_depth > self.layered_open.len() - 1 {
@@ -310,9 +305,9 @@ where
                     }
                 }
             }
-
-            self.hac_policy.notify_not_layered_turn();
         }
+
+        self.is_layered_turn = true;
 
         self.pop_from_open()
     }
@@ -328,13 +323,7 @@ where
         let mut send_buffer = vec![];
 
         loop {
-            let primal_bound_before = self.search.get_primal_bound();
-
             self.process_message();
-
-            if primal_bound_before != self.search.get_primal_bound() {
-                self.hac_policy.update_max_consecutive_best_first_turns();
-            }
 
             if self.is_terminated {
                 break;
@@ -364,13 +353,7 @@ where
             }
 
             if let Some((node, depth)) = self.pop_node_and_depth() {
-                let primal_bound_before = self.search.get_primal_bound();
-
                 self.search.expand(node, &mut keep_buffer, &mut send_buffer);
-
-                if primal_bound_before != self.search.get_primal_bound() {
-                    self.hac_policy.update_max_consecutive_best_first_turns();
-                }
 
                 for (destination_rank, successor) in send_buffer.drain(..) {
                     self.node_communicator

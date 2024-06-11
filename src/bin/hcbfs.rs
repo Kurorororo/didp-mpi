@@ -1,4 +1,4 @@
-use didp_mpi::{Hac, HacParameters, IsFloat, KeyValueStatistics};
+use didp_mpi::{Hac, IsFloat, KeyValueStatistics};
 use didp_yaml::heuristic_search_solver::{CostToDump, SolutionToDump};
 use dypdl::{
     prelude::*,
@@ -67,7 +67,7 @@ where
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
 {
-    let (parameters, f_evaluator_type, count_bound_to_expanded, hac_parameters) =
+    let (parameters, f_evaluator_type, count_bound_to_expanded) =
         load_config_from_file::<T>(config_filename);
 
     let model = Rc::new(model);
@@ -112,7 +112,6 @@ where
         transition_evaluator,
         base_cost_evaluator,
         parameters,
-        hac_parameters,
         count_bound_to_expanded,
     );
 
@@ -126,9 +125,7 @@ where
     }
 }
 
-fn load_config_from_file<T>(
-    filename: &str,
-) -> (Parameters<T>, FEvaluatorType, bool, HacParameters<T>)
+fn load_config_from_file<T>(filename: &str) -> (Parameters<T>, FEvaluatorType, bool)
 where
     T: Numeric,
     <T as FromStr>::Err: Debug,
@@ -166,14 +163,7 @@ where
         })
         .unwrap_or(false);
 
-    let hac_parameters = didp_mpi::load_hac_parameters_from_map(map);
-
-    (
-        parameters,
-        f_evaluator_type,
-        count_bound_to_expanded,
-        hac_parameters,
-    )
+    (parameters, f_evaluator_type, count_bound_to_expanded)
 }
 
 fn main() {
