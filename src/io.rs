@@ -205,13 +205,14 @@ pub enum HashType {
     Fx,
     SetZobrist,
     SetZobristWithOthers,
+    FourBitsFieldZobrist,
 }
 
 pub struct AdditionalCommonParameters {
     pub f_evaluator_type: FEvaluatorType,
     pub buffer_size: Option<usize>,
     pub hash_type: HashType,
-    pub zobrist_zero_probability: Option<f64>,
+    pub abstraction_probability: Option<f64>,
     pub count_bound_to_expanded: bool,
 }
 
@@ -243,17 +244,21 @@ impl AdditionalCommonParameters {
                     "fx" => HashType::Fx,
                     "set_zobrist" => HashType::SetZobrist,
                     "set_zobrist_with_others" => HashType::SetZobristWithOthers,
+                    "4bits_field_zobrist" => HashType::FourBitsFieldZobrist,
                     _ => panic!("Invalid hash_type {:?}", t),
                 }
             })
             .unwrap_or(HashType::Fx);
 
-        let zobrist_zero_probability = map
-            .get(&Yaml::String("zobrist_zero_probability".into()))
-            .map(|x| {
-                x.as_f64()
-                    .expect("zobrist_zero_probability must be a float")
-            });
+        let abstraction_probability = map
+            .get(&Yaml::String("abstraction_probability".into()))
+            .map(|x| x.as_f64().expect("abstraction_probability must be a float"))
+            .or(map
+                .get(&Yaml::String("zobrist_zero_probability".into()))
+                .map(|x| {
+                    x.as_f64()
+                        .expect("zobrist_zero_probability must be a float")
+                }));
 
         let count_bound_to_expanded = map
             .get(&Yaml::String("count_bound_to_expanded".into()))
@@ -267,7 +272,7 @@ impl AdditionalCommonParameters {
             f_evaluator_type,
             buffer_size,
             hash_type,
-            zobrist_zero_probability,
+            abstraction_probability,
             count_bound_to_expanded,
         }
     }

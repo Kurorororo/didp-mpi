@@ -5,6 +5,8 @@ use rand_pcg::Pcg64Mcg;
 use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
 
+use crate::state_serializer::StateSerializer;
+
 pub fn create_fx_hash() -> impl Fn(&HashableSignatureVariables) -> u64 {
     const SEED: u32 = 0x5583c24d;
 
@@ -212,5 +214,106 @@ pub fn create_set_zobrist_hash_with_others(
         signature.continuous_variables.hash(&mut hasher);
 
         hasher.finish()
+    }
+}
+
+fn popcount8(bits: u8) -> u8 {
+    let mut n = bits;
+    // use bit mask and bit operations
+    n = (n & 0x55) + ((n >> 1) & 0x55);
+    n = (n & 0x33) + ((n >> 2) & 0x33);
+    (n & 0x0f) + ((n >> 4) & 0x0f)
+}
+
+fn create_4bits_field_random_table(
+    model: &Model,
+    seed: u64,
+    abstraction_probability: f64,
+) -> Vec<Vec<[[u64; 16]; 8]>> {
+    let mut rng = Pcg64Mcg::seed_from_u64(seed);
+    let n = model.state_metadata.number_of_set_variables();
+    let mut random_table = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let object_id = model.state_metadata.set_variable_to_object[i];
+        let bits = model.state_metadata.object_numbers[object_id];
+        let n_blocks = StateSerializer::compute_n_blocks(bits);
+        let random_row = (0..n_blocks)
+            .map(|_| {
+                let mut randoms = [[0; 16]; 8];
+
+                for r in &mut randoms {
+                    if rng.gen_bool(abstraction_probability) {
+                        let rand1 = rng.gen::<u64>();
+                        let rand2 = rng.gen::<u64>();
+                        let rand3 = rng.gen::<u64>();
+
+                        for i in 0u8..16u8 {
+                            let count = popcount8(i);
+
+                            if count <= 1 {
+                                r[i as usize] = rand1;
+                            } else if count == 2 {
+                                r[i as usize] = rand2;
+                            } else {
+                                r[i as usize] = rand3;
+                            }
+                        }
+                    } else {
+                        for rr in r {
+                            *rr = rng.gen::<u64>();
+                        }
+                    }
+                }
+
+                randoms
+            })
+            .collect::<Vec<_>>();
+        random_table.push(random_row);
+    }
+
+    random_table
+}
+
+fn compute_4bits_field_zobrist_hash(
+    random_table: &[Vec<[[u64; 16]; 8]>],
+    set_variables: &[Set],
+) -> u64 {
+    let mut hash_value = 0;
+
+    for (v, table) in set_variables.iter().zip(random_table.iter()) {
+        for (bits, t) in v.as_slice().iter().zip(table) {
+            let first_4bits = bits & 0xf;
+            let second_4bits = (bits >> 4) & 0xf;
+            let third_4bits = (bits >> 8) & 0xf;
+            let fourth_4bits = (bits >> 12) & 0xf;
+            let fifth_4bits = (bits >> 16) & 0xf;
+            let sixth_4bits = (bits >> 20) & 0xf;
+            let seventh_4bits = (bits >> 24) & 0xf;
+            let eighth_4bits = (bits >> 28) & 0xf;
+            hash_value ^= t[0][first_4bits as usize]
+                ^ t[1][second_4bits as usize]
+                ^ t[2][third_4bits as usize]
+                ^ t[3][fourth_4bits as usize]
+                ^ t[4][fifth_4bits as usize]
+                ^ t[5][sixth_4bits as usize]
+                ^ t[6][seventh_4bits as usize]
+                ^ t[7][eighth_4bits as usize];
+        }
+    }
+
+    hash_value
+}
+
+pub fn create_4bits_field_zobrist_hash(
+    model: &Model,
+    abstraction_probability: f64,
+) -> impl Fn(&HashableSignatureVariables) -> u64 {
+    const SEED: u64 = 42;
+
+    let random_table = create_4bits_field_random_table(model, SEED, abstraction_probability);
+
+    move |signature: &HashableSignatureVariables| -> u64 {
+        compute_4bits_field_zobrist_hash(&random_table, &signature.set_variables)
     }
 }

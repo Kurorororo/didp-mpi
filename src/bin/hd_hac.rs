@@ -160,7 +160,7 @@ where
         HashType::SetZobrist => {
             let hash_function = didp_mpi::create_set_zobrist_hash(
                 &model,
-                additional_parameters.zobrist_zero_probability,
+                additional_parameters.abstraction_probability,
             );
             main_with_cost_type_and_hash_function(
                 universe,
@@ -174,7 +174,21 @@ where
         HashType::SetZobristWithOthers => {
             let hash_function = didp_mpi::create_set_zobrist_hash_with_others(
                 &model,
-                additional_parameters.zobrist_zero_probability,
+                additional_parameters.abstraction_probability,
+            );
+            main_with_cost_type_and_hash_function(
+                universe,
+                model,
+                parameters,
+                f_evaluator_type,
+                hash_function,
+                additional_parameters.count_bound_to_expanded,
+            );
+        }
+        HashType::FourBitsFieldZobrist => {
+            let hash_function = didp_mpi::create_4bits_field_zobrist_hash(
+                &model,
+                additional_parameters.abstraction_probability.unwrap_or(0.0),
             );
             main_with_cost_type_and_hash_function(
                 universe,

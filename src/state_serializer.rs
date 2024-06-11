@@ -23,7 +23,7 @@ pub struct StateSerializer {
 }
 
 impl StateSerializer {
-    fn compute_n_blocks(bits: usize) -> usize {
+    pub fn compute_n_blocks(bits: usize) -> usize {
         let (mut blocks, rem) = (bits / 32, bits % 32);
         blocks += (rem > 0) as usize;
         blocks
