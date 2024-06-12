@@ -199,6 +199,19 @@ where
                 hash_function,
             );
         }
+        HashType::ThreeBitsFieldZobrist => {
+            let hash_function = didp_mpi::create_3bits_field_zobrist_hash(
+                &model,
+                additional_parameters.abstraction_probability.unwrap_or(0.0),
+            );
+            main_with_cost_type_and_hash_function(
+                universe,
+                model,
+                parameters,
+                f_evaluator_type,
+                hash_function,
+            );
+        }
         HashType::FourBitsFieldZobrist => {
             let hash_function = didp_mpi::create_4bits_field_zobrist_hash(
                 &model,

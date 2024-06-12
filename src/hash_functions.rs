@@ -317,3 +317,112 @@ pub fn create_4bits_field_zobrist_hash(
         compute_4bits_field_zobrist_hash(&random_table, &signature.set_variables)
     }
 }
+
+struct ThreeBitsFieldRandomTable {
+    randoms: [[u64; 8]; 10],
+    last_randoms: [u64; 4],
+}
+
+fn create_3bits_field_random_table(
+    model: &Model,
+    seed: u64,
+    abstraction_probability: f64,
+) -> Vec<Vec<ThreeBitsFieldRandomTable>> {
+    let mut rng = Pcg64Mcg::seed_from_u64(seed);
+    let n = model.state_metadata.number_of_set_variables();
+    let mut random_table = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let object_id = model.state_metadata.set_variable_to_object[i];
+        let bits = model.state_metadata.object_numbers[object_id];
+        let n_blocks = StateSerializer::compute_n_blocks(bits);
+        let random_row = (0..n_blocks)
+            .map(|_| {
+                let mut randoms = [[0; 8]; 10];
+
+                for r in &mut randoms {
+                    if rng.gen_bool(abstraction_probability) {
+                        let rand1 = rng.gen::<u64>();
+                        let rand2 = rng.gen::<u64>();
+
+                        for i in 0u8..8u8 {
+                            if i == 0 || i == 1 || i == 2 || i == 4 {
+                                r[i as usize] = rand1;
+                            } else {
+                                r[i as usize] = rand2;
+                            }
+                        }
+                    } else {
+                        for rr in r {
+                            *rr = rng.gen::<u64>();
+                        }
+                    }
+                }
+
+                let last_randoms = [
+                    rng.gen::<u64>(),
+                    rng.gen::<u64>(),
+                    rng.gen::<u64>(),
+                    rng.gen::<u64>(),
+                ];
+
+                ThreeBitsFieldRandomTable {
+                    randoms,
+                    last_randoms,
+                }
+            })
+            .collect::<Vec<_>>();
+        random_table.push(random_row);
+    }
+
+    random_table
+}
+
+fn compute_3bits_field_zobrist_hash(
+    random_table: &[Vec<ThreeBitsFieldRandomTable>],
+    set_variables: &[Set],
+) -> u64 {
+    let mut hash_value = 0;
+
+    for (v, table) in set_variables.iter().zip(random_table.iter()) {
+        for (bits, t) in v.as_slice().iter().zip(table) {
+            let first_3bits = bits & 0x7;
+            let second_3bits = (bits >> 3) & 0x7;
+            let third_3bits = (bits >> 6) & 0x7;
+            let fourth_3bits = (bits >> 9) & 0x7;
+            let fifth_3bits = (bits >> 12) & 0x7;
+            let sixth_3bits = (bits >> 15) & 0x7;
+            let seventh_3bits = (bits >> 18) & 0x7;
+            let eighth_3bits = (bits >> 21) & 0x7;
+            let ninth_3bits = (bits >> 24) & 0x7;
+            let tenth_3bits = (bits >> 27) & 0x7;
+            let last_2bits = bits >> 30;
+            hash_value ^= t.randoms[0][first_3bits as usize]
+                ^ t.randoms[1][second_3bits as usize]
+                ^ t.randoms[2][third_3bits as usize]
+                ^ t.randoms[3][fourth_3bits as usize]
+                ^ t.randoms[4][fifth_3bits as usize]
+                ^ t.randoms[5][sixth_3bits as usize]
+                ^ t.randoms[6][seventh_3bits as usize]
+                ^ t.randoms[7][eighth_3bits as usize]
+                ^ t.randoms[8][ninth_3bits as usize]
+                ^ t.randoms[9][tenth_3bits as usize]
+                ^ t.last_randoms[last_2bits as usize];
+        }
+    }
+
+    hash_value
+}
+
+pub fn create_3bits_field_zobrist_hash(
+    model: &Model,
+    abstraction_probability: f64,
+) -> impl Fn(&HashableSignatureVariables) -> u64 {
+    const SEED: u64 = 42;
+
+    let random_table = create_3bits_field_random_table(model, SEED, abstraction_probability);
+
+    move |signature: &HashableSignatureVariables| -> u64 {
+        compute_3bits_field_zobrist_hash(&random_table, &signature.set_variables)
+    }
+}

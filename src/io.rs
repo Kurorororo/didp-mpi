@@ -205,6 +205,7 @@ pub enum HashType {
     Fx,
     SetZobrist,
     SetZobristWithOthers,
+    ThreeBitsFieldZobrist,
     FourBitsFieldZobrist,
 }
 
@@ -245,6 +246,7 @@ impl AdditionalCommonParameters {
                     "set_zobrist" => HashType::SetZobrist,
                     "set_zobrist_with_others" => HashType::SetZobristWithOthers,
                     "4bits_field_zobrist" => HashType::FourBitsFieldZobrist,
+                    "3bits_field_zobrist" => HashType::ThreeBitsFieldZobrist,
                     _ => panic!("Invalid hash_type {:?}", t),
                 }
             })
