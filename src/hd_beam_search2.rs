@@ -16,7 +16,9 @@ use std::mem;
 use std::rc::Rc;
 
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
-use crate::distributed_id_chain::{DistributedTransitionIdChain, GetDistributedTransitionIdChain};
+use crate::distributed_id_chain::{
+    DistributedTransitionIdChain, GeRctDistributedTransitionIdChain,
+};
 use crate::is_float::IsFloat;
 use crate::node_communicator::NodeCommunicator;
 use crate::node_data_type::NodeDatatype;
@@ -225,10 +227,10 @@ fn retrieve_solution<C, N, V>(
 ) -> Vec<TransitionWithId<V>>
 where
     C: Communicator,
-    N: GetDistributedTransitionIdChain,
+    N: GeRctDistributedTransitionIdChain,
     V: TransitionInterface + Clone,
 {
-    let chain = node.get_distributed_transition_id_chain();
+    let chain = node.get_rc_distributed_transition_id_chain();
     let (mut transition_ids, mut transition_forced, mut parent) =
         chain.get_transition_ids_in_this_rank(id_to_chain_node);
 
@@ -364,7 +366,7 @@ where
     let mut generated = 0;
 
     if let Some(node) = input.node.clone() {
-        let hash_value = hash_function(node.get_signature());
+        let hash_value = hash_function(node.signature());
         let assigned_rank = (hash_value % n_ranks) as Rank;
 
         if assigned_rank == this_rank {
@@ -548,7 +550,7 @@ where
                         expanded += 1;
 
                         let mut no_successor = true;
-                        node.get_distributed_transition_id_chain()
+                        node.get_rc_distributed_transition_id_chain()
                             .id
                             .set(Some(id_to_chain_node.len()));
 
@@ -556,7 +558,7 @@ where
                             if let Some(successor) =
                                 transition_evaluator(&node, &transition, primal_bound)
                             {
-                                let hash_value = hash_function(successor.get_signature());
+                                let hash_value = hash_function(successor.signature());
                                 let destination_rank = (hash_value % n_ranks) as Rank;
 
                                 if destination_rank == this_rank {
@@ -622,10 +624,10 @@ where
                         }
 
                         if no_successor {
-                            node.get_distributed_transition_id_chain().id.set(None);
+                            node.get_rc_distributed_transition_id_chain().id.set(None);
                         } else {
                             id_to_chain_node
-                                .push(node.get_distributed_transition_id_chain().clone());
+                                .push(node.get_rc_distributed_transition_id_chain().clone());
                         }
                     } else {
                         expanded_all = true;

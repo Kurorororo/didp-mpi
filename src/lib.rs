@@ -20,9 +20,12 @@ mod partial_solution;
 mod state_serializer;
 mod statistics;
 mod timestamped_communicator;
+mod util;
 
-pub use distributed_f_node::DistributedFNode;
+pub use bfs_node_with_distributed_id_chain::NodeGenerationResult;
+pub use distributed_f_node::{DistributedFNode, FNodeEvaluators};
 pub use distributed_f_node_message::DistributedFNodeMessage;
+pub use distributed_id_chain::DistributedTransitionIdChain;
 pub use hac::Hac;
 pub use hash_functions::{
     create_3bits_field_zobrist_hash, create_4bits_field_zobrist_hash, create_fx_hash,
@@ -39,5 +42,7 @@ pub use io::{
 };
 pub use is_float::IsFloat;
 pub use key_value_statistics::KeyValueStatistics;
-pub use mpi_anytime_search::MpiAnytimeSearchParameters;
+pub use mpi_anytime_search::{MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters};
+pub use node_data_type::NodeDatatype;
 pub use statistics::Statistics;
+pub use util::make_input_and_dual_bound_evalautors;

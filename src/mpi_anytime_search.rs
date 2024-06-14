@@ -2,9 +2,10 @@ use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::{
     search_algorithm::{
-        data_structure::{self, HashableSignatureVariables},
+        self,
+        data_structure::{self, HashableSignatureVariables, StateWithHashableSignatureVariables},
         util::TimeKeeper,
-        StateRegistry, SuccessorGenerator, TransitionWithId,
+        StateInRegistry, StateRegistry, SuccessorGenerator, TransitionWithId,
     },
     Parameters, Solution,
 };
@@ -23,7 +24,6 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::io;
 use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
 use crate::partial_solution;
@@ -32,6 +32,7 @@ use crate::statistics::Statistics;
 use crate::{
     bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
 };
+use crate::{bfs_node_with_distributed_id_chain::NodeGenerationResult, io};
 use crate::{
     distributed_id_chain::DistributedTransitionIdChain,
     key_value_statistics::KeyValueStatisticsTags,
@@ -413,12 +414,12 @@ where
         self.statistics.kept += 1;
     }
 
-    pub fn increment_dominated_before_closed(&mut self) {
-        self.statistics.dominated_before_closed += 1;
+    pub fn increase_dominated_before_closed(&mut self, n: usize) {
+        self.statistics.dominated_before_closed += n;
     }
 
-    pub fn increment_dominated_after_closed(&mut self) {
-        self.statistics.dominated_after_closed += 1;
+    pub fn increase_dominated_after_closed(&mut self, n: usize) {
+        self.statistics.dominated_after_closed += n;
     }
 
     pub fn update_dual_bound(&mut self, dual_bound: T) {
@@ -587,70 +588,75 @@ where
         self.n_primal_bound_ack_remaining -= 1;
     }
 
-    fn check_solution<M>(
+    fn construct_solution(
         &mut self,
-        node: &M,
+        suffix: &[TransitionWithId<V>],
+        last: Option<&TransitionWithId<V>>,
+        chain: &DistributedTransitionIdChain,
         id_to_chain_node: &[Rc<DistributedTransitionIdChain>],
-    ) -> (bool, bool)
-    where
-        M: NodeDatatype<T>,
-    {
-        if let Some((cost, suffix)) = node.get_solution_cost_and_suffix(
-            &self.model,
+    ) {
+        self.reverse_transition_ids.clear();
+        self.reverse_transition_forced.clear();
+        self.reverse_transition_ids
+            .extend(suffix.iter().rev().map(|t| t.id));
+        self.reverse_transition_forced
+            .extend(suffix.iter().rev().map(|t| t.forced));
+
+        if let Some(transition) = last {
+            self.reverse_transition_ids.push(transition.id);
+            self.reverse_transition_forced.push(transition.forced);
+        }
+
+        let (additional_ids, additional_forced, parent) =
+            chain.get_transition_ids_in_this_rank(id_to_chain_node);
+        self.reverse_transition_ids.extend(additional_ids);
+        self.reverse_transition_forced.extend(additional_forced);
+        self.partial_solution_timestamp += 1;
+
+        if let Some((parent_rank, parent_id)) = parent {
+            self.is_retrieving_partial_solution = true;
+            let buffer = [parent_id, self.partial_solution_timestamp];
+            let destination_process = self.communicator.process_at_rank(parent_rank);
+            destination_process.buffered_send_with_tag(&buffer, Self::TAG_PARTIAL_SOLUTION_REQUEST);
+            self.n_partial_solution_remaining += 1;
+        } else {
+            let reverse_transition_ids = self.reverse_transition_ids.clone();
+            let reverse_transition_forced = self.reverse_transition_forced.clone();
+            self.solution.cost = self.local_solution_cost;
+            self.update_solution_transitions(&reverse_transition_ids, &reverse_transition_forced);
+
+            if self.communicator.rank() != self.root_rank {
+                self.send_solution();
+            }
+        }
+    }
+
+    fn check_solution(
+        &mut self,
+        state: &StateWithHashableSignatureVariables,
+        cost: T,
+        last: Option<&TransitionWithId<V>>,
+        chain: &DistributedTransitionIdChain,
+        id_to_chain_node: &[Rc<DistributedTransitionIdChain>],
+    ) -> (bool, bool) {
+        if let Some(result) = search_algorithm::rollout(
+            state,
+            cost,
             self.suffix,
             &mut self.base_cost_evaluator,
+            &self.model,
         ) {
-            if !data_structure::exceed_bound(&self.model, cost, self.primal_bound) {
-                self.primal_bound = Some(cost);
-                self.local_solution_cost = Some(cost);
-
+            if !result.is_base {
+                (false, false)
+            } else if data_structure::exceed_bound(&self.model, result.cost, self.primal_bound) {
+                (true, false)
+            } else {
+                self.primal_bound = Some(result.cost);
+                self.local_solution_cost = Some(result.cost);
                 self.broadcast_primal_bound();
-
-                self.reverse_transition_ids.clear();
-                self.reverse_transition_forced.clear();
-                self.reverse_transition_ids
-                    .extend(suffix.iter().rev().map(|t| t.id));
-                self.reverse_transition_forced
-                    .extend(suffix.iter().rev().map(|t| t.forced));
-                let chain = node.get_distributed_transition_id_chain();
-                let (additional_ids, additional_forced, parent) =
-                    chain.get_transition_ids_in_this_rank(id_to_chain_node);
-                self.reverse_transition_ids.extend(additional_ids);
-                self.reverse_transition_forced.extend(additional_forced);
-                self.partial_solution_timestamp += 1;
-
-                if let Some((parent_rank, parent_id)) = parent {
-                    self.is_retrieving_partial_solution = true;
-                    let buffer = [parent_id, self.partial_solution_timestamp];
-                    let destination_process = self.communicator.process_at_rank(parent_rank);
-                    destination_process
-                        .buffered_send_with_tag(&buffer, Self::TAG_PARTIAL_SOLUTION_REQUEST);
-                    self.n_partial_solution_remaining += 1;
-                } else {
-                    let reverse_transition_ids = self.reverse_transition_ids.clone();
-                    let reverse_transition_forced = self.reverse_transition_forced.clone();
-                    self.solution.cost = self.local_solution_cost;
-                    self.update_solution_transitions(
-                        &reverse_transition_ids,
-                        &reverse_transition_forced,
-                    );
-
-                    if !self.quiet {
-                        println!(
-                            "Updated solution in rank: {}, cost: {}",
-                            self.communicator.rank(),
-                            cost
-                        );
-                    }
-
-                    if self.communicator.rank() != self.root_rank {
-                        self.send_solution();
-                    }
-                }
+                self.construct_solution(result.transitions, last, chain, id_to_chain_node);
 
                 (true, true)
-            } else {
-                (true, false)
             }
         } else {
             (false, false)
@@ -909,7 +915,7 @@ where
     }
 }
 
-pub struct MpiAnytimeSearch<'a, T, N, M, E, B, F, V = Transition>
+pub struct MpiAnytimeSearch<'a, T, N, M, L, R, B, F, V = Transition>
 where
     T: Numeric + IsFloat + Ord + Display,
     N: BfsNodeWithDistributedIdChain<T>,
@@ -918,21 +924,42 @@ where
     communicator: &'a SimpleCommunicator,
     hash_function: F,
     generator: SuccessorGenerator<TransitionWithId<V>>,
-    transition_evaluator: E,
+    local_successor_evaluator: L,
+    remote_successor_evaluator: R,
     registry: StateRegistry<T, N>,
     id_to_chain_node: Vec<Rc<DistributedTransitionIdChain>>,
     solution_manager: MpiSolutionManager<'a, T, B, V>,
     _phantom: PhantomData<M>,
 }
 
-impl<'a, T, N, M, E, B, F, V> MpiAnytimeSearch<'a, T, N, M, E, B, F, V>
+pub struct MpiAnytimeSearchEvaluators<L, R, B> {
+    pub local_successor_evaluator: L,
+    pub remote_successor_evaluator: R,
+    pub base_cost_evaluator: B,
+}
+
+impl<'a, T, N, M, L, R, B, F, V> MpiAnytimeSearch<'a, T, N, M, L, R, B, F, V>
 where
     T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
     M: NodeDatatype<T>,
-    E: FnMut(&N, &TransitionWithId<V>, Option<T>) -> Option<M>,
+    L: FnMut(
+        StateInRegistry,
+        T,
+        &TransitionWithId<V>,
+        &DistributedTransitionIdChain,
+        &mut StateRegistry<T, N>,
+        Option<T>,
+    ) -> NodeGenerationResult<Rc<N>>,
+    R: FnMut(
+        StateWithHashableSignatureVariables,
+        T,
+        &TransitionWithId<V>,
+        &DistributedTransitionIdChain,
+        Option<T>,
+    ) -> Option<M>,
     B: FnMut(T, T) -> T,
     F: FnMut(&HashableSignatureVariables) -> u64,
     V: TransitionInterface + Clone + Default + 'static,
@@ -944,8 +971,7 @@ where
     pub fn new(
         generator: SuccessorGenerator<TransitionWithId<V>>,
         suffix: &'a [TransitionWithId<V>],
-        transition_evaluator: E,
-        base_cost_evaluator: B,
+        evaluators: MpiAnytimeSearchEvaluators<L, R, B>,
         parameters: MpiAnytimeSearchParameters<T>,
         hash_function: F,
         communicator: &'a SimpleCommunicator,
@@ -954,7 +980,7 @@ where
         let solution_manager = MpiSolutionManager::new(
             &generator,
             suffix,
-            base_cost_evaluator,
+            evaluators.base_cost_evaluator,
             parameters,
             communicator,
         );
@@ -969,7 +995,8 @@ where
             communicator,
             hash_function,
             generator,
-            transition_evaluator,
+            local_successor_evaluator: evaluators.local_successor_evaluator,
+            remote_successor_evaluator: evaluators.remote_successor_evaluator,
             registry,
             id_to_chain_node: Vec::default(),
             solution_manager,
@@ -1007,9 +1034,9 @@ where
         for d in result.dominated.iter() {
             if !d.is_closed() {
                 d.close();
-                solution_manager.increment_dominated_before_closed();
+                solution_manager.increase_dominated_before_closed(1);
             } else {
-                solution_manager.increment_dominated_after_closed();
+                solution_manager.increase_dominated_after_closed(1);
             }
         }
 
@@ -1028,15 +1055,19 @@ where
 
     pub fn generate_root_node(&mut self, node: Option<M>) -> Option<Rc<N>> {
         if let Some(node) = node {
-            let hash_value = (self.hash_function)(node.get_signature());
+            let hash_value = (self.hash_function)(node.signature());
             let assigned_rank = (hash_value % self.communicator.size() as u64) as Rank;
 
             if assigned_rank == self.communicator.rank() {
                 self.solution_manager.increment_generated();
 
-                let (is_goal, _) = self
-                    .solution_manager
-                    .check_solution(&node, &self.id_to_chain_node);
+                let (is_goal, _) = self.solution_manager.check_solution(
+                    node.state(),
+                    node.cost(&self.generator.model),
+                    None,
+                    node.get_distributed_transition_id_chain(),
+                    &self.id_to_chain_node,
+                );
 
                 if is_goal {
                     self.solution_manager.solution.is_optimal = true;
@@ -1084,7 +1115,7 @@ where
             .id
             .set(Some(self.id_to_chain_node.len()));
         self.id_to_chain_node
-            .push(node.get_distributed_transition_id_chain().clone());
+            .push(node.get_rc_distributed_transition_id_chain().clone());
 
         self.solution_manager
             .increment_expanded(node.bound(&self.generator.model));
@@ -1092,15 +1123,22 @@ where
         let this_rank = self.communicator.rank();
         let mut better_goal_found = false;
 
+        let model = &self.generator.model;
+
         for transition in self.generator.applicable_transitions(node.state()) {
-            if let Some(successor) = (self.transition_evaluator)(
-                node.as_ref(),
+            if let Some((successor_state, g)) = model.generate_successor_state(
+                node.state(),
+                node.cost(model),
                 transition.as_ref(),
-                self.solution_manager.get_primal_bound(),
+                None,
             ) {
-                let (is_goal, is_better_goal) = self
-                    .solution_manager
-                    .check_solution(&successor, &self.id_to_chain_node);
+                let (is_goal, is_better_goal) = self.solution_manager.check_solution(
+                    &successor_state,
+                    g,
+                    Some(&transition),
+                    node.get_distributed_transition_id_chain(),
+                    &self.id_to_chain_node,
+                );
 
                 if is_better_goal && !better_goal_found {
                     better_goal_found = true;
@@ -1110,27 +1148,49 @@ where
                     continue;
                 }
 
-                let hash_value = (self.hash_function)(successor.get_signature());
+                let hash_value = (self.hash_function)(&successor_state.signature_variables);
                 let destination_rank = (hash_value % n_ranks) as Rank;
 
                 if destination_rank == this_rank {
-                    self.solution_manager.increment_kept();
-                    let successor = N::from(successor);
-
-                    let successor = Self::open_node_inner(
-                        successor,
+                    let successor_state = StateInRegistry::from(successor_state);
+                    let result = (self.local_successor_evaluator)(
+                        successor_state,
+                        g,
+                        &transition,
+                        node.get_distributed_transition_id_chain(),
                         &mut self.registry,
-                        &mut self.solution_manager,
+                        self.solution_manager.get_primal_bound(),
                     );
 
-                    if let Some(successor) = successor {
+                    if !result.is_pruned_by_bound {
+                        self.solution_manager.increment_kept();
+                    }
+
+                    self.solution_manager
+                        .increase_dominated_before_closed(result.n_dominated_before_closed);
+                    self.solution_manager
+                        .increase_dominated_after_closed(result.n_dominated_after_closed);
+
+                    if let Some(node) = result.node {
+                        keep_buffer.push(node);
+
+                        if result.n_dominated_before_closed == 0
+                            && result.n_dominated_after_closed == 0
+                        {
+                            self.solution_manager.increment_generated();
+                        }
+
                         if no_successor {
                             no_successor = false;
                         }
-
-                        keep_buffer.push(successor);
                     }
-                } else {
+                } else if let Some(successor) = (self.remote_successor_evaluator)(
+                    successor_state,
+                    g,
+                    &transition,
+                    node.get_distributed_transition_id_chain(),
+                    self.solution_manager.get_primal_bound(),
+                ) {
                     successor.set_parent_rank(this_rank);
                     send_buffer.push((destination_rank, successor));
                     self.solution_manager.increment_sent();

@@ -1,6 +1,6 @@
 use didp_mpi::{
     AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType, IsFloat,
-    Statistics,
+    NodeDatatype, Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -80,7 +80,10 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     if communicator.rank() == 0 && !parameters.beam_search_parameters.parameters.quiet {
         if let Some(node) = &input.node {
-            println!("Initial dual bound: {}", node.bound(&input.generator.model));
+            println!(
+                "Initial dual bound: {}",
+                node.bound(&input.generator.model).unwrap()
+            );
         }
     }
 

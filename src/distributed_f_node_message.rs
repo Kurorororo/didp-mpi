@@ -1,3 +1,4 @@
+use crate::distributed_f_node::FNodeEvaluators;
 use crate::distributed_id_chain::GetDistributedTransitionIdChain;
 use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
@@ -7,7 +8,6 @@ use super::distributed_f_node::DistributedFNode;
 use super::distributed_id_chain::DistributedTransitionIdChain;
 use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::search_algorithm::{
-    self,
     data_structure::{
         self, HashableSignatureVariables, StateInformation, StateWithHashableSignatureVariables,
     },
@@ -49,6 +49,15 @@ where
             node.f,
             Rc::new(node.transition_id_chain),
         )
+    }
+}
+
+impl<T> GetDistributedTransitionIdChain for DistributedFNodeMessage<T>
+where
+    T: Numeric,
+{
+    fn get_distributed_transition_id_chain(&self) -> &DistributedTransitionIdChain {
+        &self.transition_id_chain
     }
 }
 
@@ -178,11 +187,35 @@ where
         }
     }
 
-    fn get_signature(&self) -> &HashableSignatureVariables {
+    fn state(&self) -> &StateWithHashableSignatureVariables {
+        &self.state
+    }
+
+    fn signature(&self) -> &HashableSignatureVariables {
         &self.state.signature_variables
     }
 
-    fn get_bound(model: &Model, serializer: &StateSerializer, data: &[u8]) -> Option<T> {
+    fn cost(&self, _: &Model) -> T {
+        self.g
+    }
+
+    fn bound(&self, model: &Model) -> Option<T> {
+        if model.reduce_function == ReduceFunction::Max {
+            Some(self.f)
+        } else {
+            Some(-self.f)
+        }
+    }
+
+    fn set_parent_rank(&self, parent_rank: Rank) {
+        self.transition_id_chain.parent_rank.set(Some(parent_rank));
+    }
+
+    fn get_bound_from_buffer(
+        model: &Model,
+        serializer: &StateSerializer,
+        data: &[u8],
+    ) -> Option<T> {
         let bound = if T::is_float() {
             let size = mem::size_of::<Continuous>();
             let offset = serializer.get_total_size() + 2 * size;
@@ -200,35 +233,6 @@ where
         };
 
         Some(bound)
-    }
-
-    fn set_parent_rank(&self, parent_rank: Rank) {
-        self.transition_id_chain.parent_rank.set(Some(parent_rank));
-    }
-
-    fn get_solution_cost_and_suffix<'a, V, B>(
-        &self,
-        model: &Model,
-        suffix: &'a [V],
-        base_cost_evaluator: B,
-    ) -> Option<(T, &'a [V])>
-    where
-        T: Numeric + Ord,
-        V: TransitionInterface,
-        B: FnMut(T, T) -> T,
-    {
-        let result =
-            search_algorithm::rollout(&self.state, self.g, suffix, base_cost_evaluator, model)?;
-
-        if result.is_base {
-            Some((result.cost, result.transitions))
-        } else {
-            None
-        }
-    }
-
-    fn get_distributed_transition_id_chain(&self) -> &DistributedTransitionIdChain {
-        &self.transition_id_chain
     }
 }
 
@@ -272,12 +276,44 @@ where
         })
     }
 
-    pub fn bound(&self, model: &Model) -> T {
-        if model.reduce_function == ReduceFunction::Max {
-            self.f
-        } else {
-            -self.f
+    /// Generates a successor node as a sendable message.
+    pub fn generate_node<V, H, F>(
+        state: StateWithHashableSignatureVariables,
+        g: T,
+        transition: &TransitionWithId<V>,
+        transition_id_chain: &DistributedTransitionIdChain,
+        model: &Model,
+        evaluators: FNodeEvaluators<H, F>,
+        primal_bound: Option<T>,
+    ) -> Option<Self>
+    where
+        V: TransitionInterface,
+        H: FnOnce(&StateWithHashableSignatureVariables) -> Option<T>,
+        F: FnOnce(T, T, &StateWithHashableSignatureVariables) -> T,
+    {
+        let h = (evaluators.h)(&state)?;
+        let f = (evaluators.f)(g, h, &state);
+
+        if data_structure::exceed_bound(model, f, primal_bound) {
+            return None;
         }
+
+        let (h, f) = if model.reduce_function == ReduceFunction::Max {
+            (h, f)
+        } else {
+            (-h, -f)
+        };
+
+        let transition_id_chain =
+            transition_id_chain.generate_successor(transition.id, transition.forced);
+
+        Some(Self {
+            state,
+            g,
+            h,
+            f,
+            transition_id_chain,
+        })
     }
 }
 
@@ -301,30 +337,21 @@ where
     {
         let (state, g) =
             model.generate_successor_state(self.state(), self.cost(model), transition, None)?;
-        let h = h_evaluator(&state)?;
-        let f = f_evaluator(g, h, &state);
 
-        if data_structure::exceed_bound(model, f, primal_bound) {
-            return None;
-        }
-
-        let (h, f) = if model.reduce_function == ReduceFunction::Max {
-            (h, f)
-        } else {
-            (-h, -f)
+        let evaluators = FNodeEvaluators {
+            h: h_evaluator,
+            f: f_evaluator,
         };
 
-        let transition_id_chain = self
-            .get_distributed_transition_id_chain()
-            .generate_successor(transition.id, transition.forced);
-
-        Some(DistributedFNodeMessage {
+        DistributedFNodeMessage::generate_node(
             state,
             g,
-            h,
-            f,
-            transition_id_chain,
-        })
+            transition,
+            self.get_distributed_transition_id_chain(),
+            model,
+            evaluators,
+            primal_bound,
+        )
     }
 }
 
@@ -439,7 +466,7 @@ mod tests {
         let deserialized = DistributedFNodeMessage::<Integer>::deserialize(&serializer, &buffer);
 
         assert_eq!(
-            DistributedFNodeMessage::<Integer>::get_bound(&model, &serializer, &buffer),
+            DistributedFNodeMessage::<Integer>::get_bound_from_buffer(&model, &serializer, &buffer),
             Some(42)
         );
         assert_eq!(deserialized, node);
@@ -471,7 +498,11 @@ mod tests {
             DistributedFNodeMessage::<OrderedContinuous>::deserialize(&serializer, &buffer);
 
         assert_eq!(
-            DistributedFNodeMessage::<OrderedContinuous>::get_bound(&model, &serializer, &buffer),
+            DistributedFNodeMessage::<OrderedContinuous>::get_bound_from_buffer(
+                &model,
+                &serializer,
+                &buffer
+            ),
             Some(OrderedContinuous::from(4.2))
         );
         assert_eq!(deserialized, node);
@@ -942,13 +973,14 @@ mod tests {
         node.get_distributed_transition_id_chain().id.set(Some(0));
         let h_evaluator = |_: &_| None;
         let f_evaluator = |g: i32, h: i32, _: &_| g + h;
-        let successor = node.generate_sendable_successor_node(
-            &transition,
-            &model,
-            h_evaluator,
-            f_evaluator,
-            primal_bound,
-        );
+        let successor: Option<DistributedFNodeMessage<i32>> = node
+            .generate_sendable_successor_node(
+                &transition,
+                &model,
+                h_evaluator,
+                f_evaluator,
+                primal_bound,
+            );
 
         assert!(successor.is_none());
     }

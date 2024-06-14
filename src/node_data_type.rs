@@ -1,16 +1,18 @@
-use dypdl::{prelude::*, variable_type::Numeric};
-use dypdl_heuristic_search::search_algorithm::data_structure::HashableSignatureVariables;
+use dypdl::prelude::*;
+use dypdl_heuristic_search::search_algorithm::data_structure::{
+    HashableSignatureVariables, StateWithHashableSignatureVariables,
+};
 use mpi::{
     datatype::{DatatypeRef, UserDatatype},
     Address, Count, Rank,
 };
 
 use crate::{
-    distributed_id_chain::DistributedTransitionIdChain, is_float::IsFloat,
+    distributed_id_chain::GetDistributedTransitionIdChain, is_float::IsFloat,
     state_serializer::StateSerializer,
 };
 
-pub trait NodeDatatype<T: IsFloat> {
+pub trait NodeDatatype<T: IsFloat>: GetDistributedTransitionIdChain {
     fn get_total_size(serializer: &StateSerializer) -> usize;
 
     fn get_datatype_blocklengths(serializer: &StateSerializer) -> Vec<Count>;
@@ -31,22 +33,19 @@ pub trait NodeDatatype<T: IsFloat> {
 
     fn deserialize(serializer: &StateSerializer, buffer: &[u8]) -> Self;
 
-    fn get_signature(&self) -> &HashableSignatureVariables;
+    fn state(&self) -> &StateWithHashableSignatureVariables;
 
-    fn get_bound(model: &Model, serializer: &StateSerializer, buffer: &[u8]) -> Option<T>;
+    fn cost(&self, model: &Model) -> T;
+
+    fn bound(&self, model: &Model) -> Option<T>;
+
+    fn signature(&self) -> &HashableSignatureVariables;
 
     fn set_parent_rank(&self, parent_rank: Rank);
 
-    fn get_solution_cost_and_suffix<'a, V, B>(
-        &self,
+    fn get_bound_from_buffer(
         model: &Model,
-        suffix: &'a [V],
-        base_cost_evaluator: B,
-    ) -> Option<(T, &'a [V])>
-    where
-        T: Numeric + Ord,
-        V: TransitionInterface,
-        B: FnMut(T, T) -> T;
-
-    fn get_distributed_transition_id_chain(&self) -> &DistributedTransitionIdChain;
+        serializer: &StateSerializer,
+        buffer: &[u8],
+    ) -> Option<T>;
 }

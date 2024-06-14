@@ -61,7 +61,9 @@ where
         };
         source.receive_into_with_tag(&mut v, self.tag);
 
-        if let Some(bound) = M::get_bound(&self.model, &self.state_serializer, &self.tmp_buffer) {
+        if let Some(bound) =
+            M::get_bound_from_buffer(&self.model, &self.state_serializer, &self.tmp_buffer)
+        {
             if data_structure::exceed_bound(&self.model, bound, primal_bound) {
                 return None;
             }
@@ -129,7 +131,9 @@ where
         self.communicator
             .receive_into(&mut self.tmp_buffer, source_rank);
 
-        if let Some(bound) = M::get_bound(&self.model, &self.state_serializer, &self.tmp_buffer) {
+        if let Some(bound) =
+            M::get_bound_from_buffer(&self.model, &self.state_serializer, &self.tmp_buffer)
+        {
             if data_structure::exceed_bound(&self.model, bound, primal_bound) {
                 return None;
             }
@@ -144,7 +148,9 @@ where
         self.communicator
             .receive_into(&mut self.tmp_buffer, source_rank);
 
-        if let Some(bound) = M::get_bound(&self.model, &self.state_serializer, &self.tmp_buffer) {
+        if let Some(bound) =
+            M::get_bound_from_buffer(&self.model, &self.state_serializer, &self.tmp_buffer)
+        {
             if data_structure::exceed_bound(&self.model, bound, dual_bound) {
                 None
             } else {
@@ -241,7 +247,9 @@ where
         self.communicator
             .receive_into(&mut self.tmp_buffer, source_rank);
 
-        if let Some(bound) = M::get_bound(&self.model, &self.state_serializer, &self.tmp_buffer) {
+        if let Some(bound) =
+            M::get_bound_from_buffer(&self.model, &self.state_serializer, &self.tmp_buffer)
+        {
             if data_structure::exceed_bound(&self.model, bound, primal_bound) {
                 return None;
             }
@@ -259,7 +267,9 @@ where
         self.communicator
             .receive_into(&mut self.tmp_buffer, source_rank);
 
-        if let Some(bound) = M::get_bound(&self.model, &self.state_serializer, &self.tmp_buffer) {
+        if let Some(bound) =
+            M::get_bound_from_buffer(&self.model, &self.state_serializer, &self.tmp_buffer)
+        {
             if data_structure::exceed_bound(&self.model, bound, dual_bound) {
                 None
             } else {

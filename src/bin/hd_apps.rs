@@ -1,6 +1,6 @@
 use didp_mpi::{
-    AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType, HdApps,
-    IsFloat, KeyValueStatistics, MpiAnytimeSearchParameters, Statistics,
+    AdditionalCommonParameters, HashType, HdApps, IsFloat, KeyValueStatistics,
+    MpiAnytimeSearchParameters, NodeDatatype, Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -8,17 +8,13 @@ use dypdl::{
     variable_type::{Numeric, OrderedContinuous},
 };
 use dypdl_heuristic_search::{
-    search_algorithm::{
-        data_structure::HashableSignatureVariables, SearchInput, SuccessorGenerator,
-        TransitionWithId,
-    },
-    FEvaluatorType, Parameters, ProgressiveSearchParameters,
+    search_algorithm::data_structure::HashableSignatureVariables, FEvaluatorType, Parameters,
+    ProgressiveSearchParameters,
 };
 use mpi::{environment::Universe, traits::*};
 use std::fmt::{Debug, Display};
 use std::fs;
 use std::hash::Hash;
-use std::rc::Rc;
 use std::str::FromStr;
 
 #[cfg(not(target_env = "msvc"))]
@@ -42,47 +38,20 @@ fn main_with_cost_type_and_hash_function<T, H>(
     CostToDump: From<T>,
     H: Fn(&HashableSignatureVariables) -> u64,
 {
-    let model = Rc::new(model);
-    let generator = SuccessorGenerator::<TransitionWithId>::from_model(model.clone(), false);
-    let base_cost_evaluator = move |cost, base_cost| f_evaluator_type.eval(cost, base_cost);
-    let cost = match f_evaluator_type {
-        FEvaluatorType::Plus => T::zero(),
-        FEvaluatorType::Product => T::one(),
-        FEvaluatorType::Max => T::min_value(),
-        FEvaluatorType::Min => T::max_value(),
-        FEvaluatorType::Overwrite => T::zero(),
-    };
-    let h_model = model.clone();
-    let h_evaluator = move |state: &_| h_model.eval_dual_bound(state);
-    let f_evaluator = move |g, h, _: &_| f_evaluator_type.eval(g, h);
-    let node = DistributedFNodeMessage::generate_root_node(
-        model.target.clone(),
-        cost,
-        &model,
-        &h_evaluator,
-        &f_evaluator,
+    let (input, evaluators) = didp_mpi::make_input_and_dual_bound_evalautors(
+        model,
+        f_evaluator_type,
         parameters.primal_bound,
     );
-    let input = SearchInput {
-        node,
-        generator,
-        solution_suffix: &[],
-    };
-    let transition_evaluator = move |node: &DistributedFNode<_>, transition: &_, primal_bound| {
-        node.generate_sendable_successor_node(
-            transition,
-            &model,
-            &h_evaluator,
-            &f_evaluator,
-            primal_bound,
-        )
-    };
 
     let communicator = universe.world();
 
     if communicator.rank() == 0 && !parameters.quiet {
         if let Some(node) = &input.node {
-            println!("Initial dual bound: {}", node.bound(&input.generator.model));
+            println!(
+                "Initial dual bound: {}",
+                node.bound(&input.generator.model).unwrap()
+            );
         }
     }
 
@@ -108,8 +77,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     let mut solver = HdApps::new(
         input,
-        transition_evaluator,
-        base_cost_evaluator,
+        evaluators,
         parameters,
         progressive_parameters,
         hash_function,

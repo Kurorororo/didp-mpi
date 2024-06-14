@@ -1,8 +1,7 @@
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::search_algorithm::{
-    data_structure::{self, HashableSignatureVariables},
-    SearchInput, Solution, TransitionWithId,
+    data_structure::{self, HashableSignatureVariables, StateWithHashableSignatureVariables}, SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId
 };
 use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
 use std::collections::BinaryHeap;
@@ -11,23 +10,28 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::is_float::IsFloat;
-use crate::mpi_anytime_search::{MpiAnytimeSearch, MpiAnytimeSearchParameters};
 use crate::node_communicator::TimeStampedNodeDepthCommunicator;
 use crate::node_data_type::NodeDatatype;
 use crate::statistics::Statistics;
 use crate::{
     bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
 };
+use crate::{bfs_node_with_distributed_id_chain::NodeGenerationResult, is_float::IsFloat};
+use crate::{
+    distributed_id_chain::DistributedTransitionIdChain,
+    mpi_anytime_search::{
+        MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters,
+    },
+};
 
-pub struct HdHac<'a, T, N, M, E, B, F, V = Transition>
+pub struct HdHac<'a, T, N, M, L, R, B, F, V = Transition>
 where
     T: Numeric + IsFloat + Ord + Display,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
     V: TransitionInterface + Clone + Default,
 {
     model: Rc<Model>,
-    search: MpiAnytimeSearch<'a, T, N, M, E, B, F, V>,
+    search: MpiAnytimeSearch<'a, T, N, M, L, R, B, F, V>,
     communicator: &'a SimpleCommunicator,
     node_communicator: TimeStampedNodeDepthCommunicator<'a, SimpleCommunicator, M, T>,
     open: BinaryHeap<(Rc<N>, usize)>,
@@ -41,42 +45,54 @@ where
     is_terminated: bool,
 }
 
-impl<'a, T, N, M, E, B, F, V> HdHac<'a, T, N, M, E, B, F, V>
+impl<'a, T, N, M, L, R, B, F, V> HdHac<'a, T, N, M, L, R, B, F, V>
 where
     T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
     M: Clone + NodeDatatype<T>,
-    E: FnMut(&N, &TransitionWithId<V>, Option<T>) -> Option<M>,
+    L: FnMut(
+        StateInRegistry,
+        T,
+        &TransitionWithId<V>,
+        &DistributedTransitionIdChain,
+        &mut StateRegistry<T, N>,
+        Option<T>,
+    ) -> NodeGenerationResult<Rc<N>>,
+    R: FnMut(
+        StateWithHashableSignatureVariables,
+        T,
+        &TransitionWithId<V>,
+        &DistributedTransitionIdChain,
+        Option<T>,
+    ) -> Option<M>,
     B: FnMut(T, T) -> T,
     F: FnMut(&HashableSignatureVariables) -> u64,
     V: TransitionInterface + Clone + Default + 'static,
     Transition: From<V> + From<TransitionWithId<V>>,
     TransitionWithId<V>: Clone,
 {
-    const TAG_NODE: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET;
-    const TAG_TIME_OUT: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 1;
-    const TAG_TIME_OUT_ACK: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 2;
+    const TAG_NODE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET;
+    const TAG_TIME_OUT: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 1;
+    const TAG_TIME_OUT_ACK: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 2;
     const TAG_TERMINATION_DETECTION: Tag =
-        MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 3;
-    const TAG_TERMINATE: Tag = MpiAnytimeSearch::<'a, T, N, M, E, B, F, V>::TAG_OFFSET + 4;
+        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 3;
+    const TAG_TERMINATE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 4;
 
     /// Creates a new HDACPS solver.
     pub fn new(
         input: SearchInput<'a, M, TransitionWithId<V>>,
-        transition_evaluator: E,
-        base_cost_evaluator: B,
+        evaluators: MpiAnytimeSearchEvaluators<L, R, B>,
         parameters: MpiAnytimeSearchParameters<T>,
         hash_function: F,
         communicator: &'a SimpleCommunicator,
-    ) -> HdHac<'a, T, N, M, E, B, F, V> {
+    ) -> Self {
         let model = input.generator.model.clone();
         let mut search = MpiAnytimeSearch::new(
             input.generator,
             input.solution_suffix,
-            transition_evaluator,
-            base_cost_evaluator,
+            evaluators,
             parameters,
             hash_function,
             communicator,

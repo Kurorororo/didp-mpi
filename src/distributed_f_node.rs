@@ -1,5 +1,9 @@
-use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
-use crate::distributed_id_chain::GetDistributedTransitionIdChain;
+use crate::bfs_node_with_distributed_id_chain::NodeGenerationResult;
+use crate::distributed_id_chain::GeRctDistributedTransitionIdChain;
+use crate::{
+    bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain,
+    distributed_id_chain::GetDistributedTransitionIdChain,
+};
 
 use super::distributed_id_chain::DistributedTransitionIdChain;
 use dypdl::{prelude::*, variable_type::Numeric};
@@ -24,6 +28,15 @@ where
     state: StateInRegistry,
     transition_id_chain: Rc<DistributedTransitionIdChain>,
     closed: Cell<bool>,
+}
+
+/// Evaluators for FNode.
+#[derive(Clone)]
+pub struct FNodeEvaluators<H, F> {
+    /// h.
+    pub h: H,
+    /// f.
+    pub f: F,
 }
 
 impl<T> DistributedFNode<T>
@@ -84,6 +97,43 @@ where
         ))
     }
 
+    /// Generate a successor node given a state and the g-value.
+    pub fn generate_node<S, V, H, F>(
+        state: S,
+        g: T,
+        transition: &TransitionWithId<V>,
+        transition_id_chain: &DistributedTransitionIdChain,
+        model: &Model,
+        evaluators: FNodeEvaluators<H, F>,
+        primal_bound: Option<T>,
+    ) -> Option<Self>
+    where
+        S: StateInterface,
+        StateInRegistry: From<S>,
+        V: TransitionInterface,
+        H: FnOnce(&StateInRegistry) -> Option<T>,
+        F: FnOnce(T, T, &StateInRegistry) -> T,
+    {
+        let state = StateInRegistry::from(state);
+        let h = (evaluators.h)(&state)?;
+        let f = (evaluators.f)(g, h, &state);
+
+        if data_structure::exceed_bound(model, f, primal_bound) {
+            return None;
+        }
+
+        let (h, f) = if model.reduce_function == ReduceFunction::Max {
+            (h, f)
+        } else {
+            (-h, -f)
+        };
+
+        let transition_id_chain =
+            Rc::new(transition_id_chain.generate_successor(transition.id, transition.forced));
+
+        Some(Self::new(state, g, h, f, transition_id_chain))
+    }
+
     /// Generates a successor node.
     pub fn generate_successor_node<V, H, F>(
         &self,
@@ -98,26 +148,93 @@ where
         H: FnOnce(&StateInRegistry) -> Option<T>,
         F: FnOnce(T, T, &StateInRegistry) -> T,
     {
-        let (state, g) = model.generate_successor_state(&self.state, self.g, transition, None)?;
-        let h = h_evaluator(&state)?;
-        let f = f_evaluator(g, h, &state);
-
-        if data_structure::exceed_bound(model, f, primal_bound) {
-            return None;
-        }
-
-        let (h, f) = if model.reduce_function == ReduceFunction::Max {
-            (h, f)
-        } else {
-            (-h, -f)
+        let (state, g): (StateInRegistry, _) =
+            model.generate_successor_state(&self.state, self.g, transition, None)?;
+        let evaluators = FNodeEvaluators {
+            h: h_evaluator,
+            f: f_evaluator,
         };
 
-        let transition_id_chain = Rc::new(
-            self.transition_id_chain
-                .generate_successor(transition.id, transition.forced),
-        );
+        Self::generate_node(
+            state,
+            g,
+            transition,
+            &self.transition_id_chain,
+            model,
+            evaluators,
+            primal_bound,
+        )
+    }
 
-        Some(Self::new(state, g, h, f, transition_id_chain))
+    /// Inserts a successor node generated from a given state and the g-value into the registry.
+    pub fn insert_node<V, H, F>(
+        state: StateInRegistry,
+        g: T,
+        transition: &TransitionWithId<V>,
+        transition_id_chain: &DistributedTransitionIdChain,
+        registry: &mut StateRegistry<T, Self>,
+        evaluators: FNodeEvaluators<H, F>,
+        primal_bound: Option<T>,
+    ) -> NodeGenerationResult<Rc<Self>>
+    where
+        V: TransitionInterface,
+        H: FnOnce(&StateInRegistry) -> Option<T>,
+        F: FnOnce(T, T, &StateInRegistry) -> T,
+    {
+        let model = registry.model().clone();
+        let maximize = model.reduce_function == ReduceFunction::Max;
+        let mut is_pruned_by_bound = false;
+
+        let constructor = |state, g, other: Option<&Self>| {
+            let h = if let Some(other) = other {
+                if maximize {
+                    other.h
+                } else {
+                    -other.h
+                }
+            } else if let Some(h) = (evaluators.h)(&state) {
+                h
+            } else {
+                is_pruned_by_bound = true;
+
+                return None;
+            };
+            let f = (evaluators.f)(g, h, &state);
+
+            if data_structure::exceed_bound(&model, f, primal_bound) {
+                is_pruned_by_bound = true;
+
+                return None;
+            }
+
+            let (h, f) = if maximize { (h, f) } else { (-h, -f) };
+
+            let transition_id_chain =
+                Rc::new(transition_id_chain.generate_successor(transition.id, transition.forced));
+
+            Some(Self::new(state, g, h, f, transition_id_chain))
+        };
+
+        let result = registry.insert_with(state, g, constructor);
+
+        let mut n_dominated_before_closed = 0;
+        let mut n_dominated_after_closed = 0;
+
+        for d in result.dominated.iter() {
+            if d.is_closed() {
+                n_dominated_after_closed += 1;
+            } else {
+                n_dominated_before_closed += 1;
+                d.close();
+            }
+        }
+
+        NodeGenerationResult {
+            node: result.information,
+            is_pruned_by_bound,
+            n_dominated_before_closed,
+            n_dominated_after_closed,
+        }
     }
 
     /// Inserts a successor node into the registry.
@@ -128,57 +245,34 @@ where
         h_evaluator: H,
         f_evaluator: F,
         primal_bound: Option<T>,
-    ) -> Option<(Rc<Self>, bool)>
+    ) -> NodeGenerationResult<Rc<Self>>
     where
         V: TransitionInterface,
         H: FnOnce(&StateInRegistry) -> Option<T>,
         F: FnOnce(T, T, &StateInRegistry) -> T,
     {
-        let (state, g) =
+        if let Some((state, g)) =
             registry
                 .model()
-                .generate_successor_state(&self.state, self.g, transition, None)?;
-
-        let model = registry.model().clone();
-        let maximize = model.reduce_function == ReduceFunction::Max;
-
-        let constructor = |state, g, other: Option<&Self>| {
-            let h = if let Some(other) = other {
-                if maximize {
-                    other.h
-                } else {
-                    -other.h
-                }
-            } else {
-                h_evaluator(&state)?
+                .generate_successor_state(&self.state, self.g, transition, None)
+        {
+            let evaluators = FNodeEvaluators {
+                h: h_evaluator,
+                f: f_evaluator,
             };
-            let f = f_evaluator(g, h, &state);
 
-            if data_structure::exceed_bound(&model, f, primal_bound) {
-                return None;
-            }
-
-            let (h, f) = if maximize { (h, f) } else { (-h, -f) };
-
-            let transition_id_chain = Rc::new(
-                self.transition_id_chain
-                    .generate_successor(transition.id, transition.forced),
-            );
-
-            Some(Self::new(state, g, h, f, transition_id_chain))
-        };
-
-        let result = registry.insert_with(state, g, constructor);
-
-        for d in result.dominated.iter() {
-            if !d.is_closed() {
-                d.close();
-            }
+            Self::insert_node(
+                state,
+                g,
+                transition,
+                &self.transition_id_chain,
+                registry,
+                evaluators,
+                primal_bound,
+            )
+        } else {
+            NodeGenerationResult::default()
         }
-
-        let successor = result.information?;
-
-        Some((successor, result.dominated.is_empty()))
     }
 }
 
@@ -261,7 +355,17 @@ where
     T: Numeric,
 {
     #[inline]
-    fn get_distributed_transition_id_chain(&self) -> &Rc<DistributedTransitionIdChain> {
+    fn get_distributed_transition_id_chain(&self) -> &DistributedTransitionIdChain {
+        &self.transition_id_chain
+    }
+}
+
+impl<T> GeRctDistributedTransitionIdChain for DistributedFNode<T>
+where
+    T: Numeric,
+{
+    #[inline]
+    fn get_rc_distributed_transition_id_chain(&self) -> &Rc<DistributedTransitionIdChain> {
         &self.transition_id_chain
     }
 }
@@ -835,9 +939,12 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_some());
-        let (successor, generated) = result.unwrap();
-        assert!(generated);
+
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_some());
+        let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
         assert_eq!(successor.cost(&model), 2);
         assert_eq!(successor.bound(&model), Some(2));
@@ -897,9 +1004,11 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_some());
-        let (successor, generated) = result.unwrap();
-        assert!(generated);
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_some());
+        let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
         assert_eq!(successor.cost(&model), 2);
         assert_eq!(successor.bound(&model), Some(2));
@@ -962,7 +1071,10 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_none());
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_none());
     }
 
     #[test]
@@ -1030,13 +1142,15 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_some());
-        let (successor, generated) = result.unwrap();
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_some());
+        let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
         assert_eq!(successor.cost(&model), 2);
         assert_eq!(successor.bound(&model), Some(2));
         assert!(!successor.is_closed());
-        assert!(generated);
 
         let expected_state: StateInRegistry = transition2.apply(&state, &model.table_registry);
         let result = node.insert_successor_node(
@@ -1046,13 +1160,15 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_some());
-        let (successor, generated) = result.unwrap();
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 1);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_some());
+        let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
         assert_eq!(successor.cost(&model), 2);
         assert_eq!(successor.bound(&model), Some(2));
         assert!(!successor.is_closed());
-        assert!(!generated);
     }
 
     #[test]
@@ -1120,13 +1236,15 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_some());
-        let (successor, generated) = result.unwrap();
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_some());
+        let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
         assert_eq!(successor.cost(&model), 2);
         assert_eq!(successor.bound(&model), Some(2));
         assert!(!successor.is_closed());
-        assert!(generated);
 
         let expected_state: StateInRegistry = transition2.apply(&state, &model.table_registry);
         let result = node.insert_successor_node(
@@ -1136,13 +1254,15 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_some());
-        let (successor, generated) = result.unwrap();
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 1);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_some());
+        let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
         assert_eq!(successor.cost(&model), 2);
         assert_eq!(successor.bound(&model), Some(2));
         assert!(!successor.is_closed());
-        assert!(!generated);
     }
 
     #[test]
@@ -1210,13 +1330,15 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_some());
-        let (successor, generated) = result.unwrap();
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_some());
+        let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
         assert_eq!(successor.cost(&model), 3);
         assert_eq!(successor.bound(&model), Some(3));
         assert!(!successor.is_closed());
-        assert!(generated);
 
         let result = node.insert_successor_node(
             &transition1,
@@ -1225,7 +1347,10 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_none());
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_none());
     }
 
     #[test]
@@ -1293,13 +1418,15 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_some());
-        let (successor, generated) = result.unwrap();
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_some());
+        let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
         assert_eq!(successor.cost(&model), 3);
         assert_eq!(successor.bound(&model), Some(3));
         assert!(!successor.is_closed());
-        assert!(generated);
 
         let result = node.insert_successor_node(
             &transition1,
@@ -1308,7 +1435,10 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_none());
+        assert!(!result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_none());
     }
 
     #[test]
@@ -1363,7 +1493,10 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_none());
+        assert!(result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_none());
     }
 
     #[test]
@@ -1386,7 +1519,7 @@ mod tests {
         assert!(result.is_ok());
         let result = transition1.add_effect(v2, v2 + 1);
         assert!(result.is_ok());
-        transition1.set_cost(IntegerExpression::Cost + 1);
+        transition1.set_cost(IntegerExpression::Cost - 1);
         let transition1 = TransitionWithId {
             id: 0,
             transition: transition1,
@@ -1419,7 +1552,10 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_none());
+        assert!(result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_none());
     }
 
     #[test]
@@ -1432,9 +1568,6 @@ mod tests {
         let v2 = model.add_integer_resource_variable("v2", false, 1);
         assert!(v2.is_ok());
         let v2 = v2.unwrap();
-        let result =
-            model.add_state_constraint(Condition::comparison_i(ComparisonOperator::Le, v1, 0));
-        assert!(result.is_ok());
         let model = Rc::new(model);
 
         let mut registry = StateRegistry::<_, _>::new(model.clone());
@@ -1477,7 +1610,10 @@ mod tests {
             f_evaluator,
             primal_bound,
         );
-        assert!(result.is_none());
+        assert!(result.is_pruned_by_bound);
+        assert_eq!(result.n_dominated_before_closed, 0);
+        assert_eq!(result.n_dominated_after_closed, 0);
+        assert!(result.node.is_none());
     }
 
     #[test]
@@ -1537,8 +1673,8 @@ mod tests {
             &f_evaluator,
             None,
         );
-        assert!(node3.is_some());
-        let (node3, _) = node3.unwrap();
+        assert!(node3.node.is_some());
+        let node3 = node3.node.unwrap();
 
         let h_evaluator_1 = |_: &StateInRegistry| Some(1);
         let node4 = DistributedFNode::<_>::generate_root_node(
@@ -1625,8 +1761,8 @@ mod tests {
             &f_evaluator,
             None,
         );
-        assert!(node3.is_some());
-        let (node3, _) = node3.unwrap();
+        assert!(node3.node.is_some());
+        let node3 = node3.node.unwrap();
 
         let h_evaluator_1 = |_: &StateInRegistry| Some(1);
         let node4 = DistributedFNode::<_>::generate_root_node(
