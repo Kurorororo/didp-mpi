@@ -18,6 +18,60 @@ pub fn create_fx_hash() -> impl Fn(&HashableSignatureVariables) -> u64 {
     }
 }
 
+fn create_set_masks(model: &Model, seed: u64, zero_probability: f64) -> Vec<Vec<u32>> {
+    let mut rng = Pcg64Mcg::seed_from_u64(seed);
+    let n = model.state_metadata.number_of_set_variables();
+    let mut masks = Vec::with_capacity(n);
+
+    for i in 0..n {
+        let object_id = model.state_metadata.set_variable_to_object[i];
+        let bits = model.state_metadata.object_numbers[object_id];
+        let n_blocks = StateSerializer::compute_n_blocks(bits);
+        let mut row = Vec::with_capacity(n_blocks);
+
+        for _ in 0..n_blocks {
+            let mut mask = 0;
+
+            for _ in 0..32 {
+                if rng.gen_bool(zero_probability) {
+                    mask <<= 1;
+                } else {
+                    mask = (mask << 1) | 1;
+                }
+            }
+
+            row.push(mask);
+        }
+
+        masks.push(row);
+    }
+
+    masks
+}
+
+pub fn create_masked_fx_hash(
+    model: &Model,
+    zero_probability: Option<f64>,
+) -> impl Fn(&HashableSignatureVariables) -> u64 {
+    const RANDOM_SEED: u64 = 42;
+    const SEED: u32 = 0x5583c24d;
+
+    let masks = create_set_masks(model, RANDOM_SEED, zero_probability.unwrap_or(0.0));
+
+    move |signature: &HashableSignatureVariables| -> u64 {
+        let mut hasher = FxHasher::default();
+        hasher.write_u32(SEED);
+
+        for (v, row) in signature.set_variables.iter().zip(masks.iter()) {
+            for (bits, mask) in v.as_slice().iter().zip(row.iter()) {
+                hasher.write_u32(bits & mask);
+            }
+        }
+
+        hasher.finish()
+    }
+}
+
 fn create_per_element_random_table(model: &Model, seed: u64) -> Vec<Vec<Vec<u64>>> {
     let mut rng = Pcg64Mcg::seed_from_u64(seed);
     let n = model.state_metadata.number_of_set_variables();

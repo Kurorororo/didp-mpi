@@ -1,6 +1,5 @@
 use didp_mpi::{
-    cbfs_initiator, create_set_zobrist_hash, AssignemntDistribution, DistributedFNode,
-    FNodeEvaluators, InitiationParameters, IsFloat,
+    AssignemntDistribution, DistributedFNode, FNodeEvaluators, InitiationParameters, IsFloat,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -173,7 +172,8 @@ fn main_with_cost_type<T>(
             )
         };
 
-    let result = cbfs_initiator(input, successor_evaluator, base_cost_evaluator, parameters);
+    let result =
+        didp_mpi::cbfs_initiator(input, successor_evaluator, base_cost_evaluator, parameters);
 
     println!(
         "Generated {} nodes with {} seconds.",
@@ -195,7 +195,7 @@ fn main_with_cost_type<T>(
         let mut distribution = AssignemntDistribution::default();
         distribution.rank_to_size.reserve(n_ranks as usize);
 
-        let mut hash_function = create_set_zobrist_hash(&model, None);
+        let mut hash_function = didp_mpi::create_fx_hash();
         didp_mpi::compute_hash_values(&mut hash_function, &result.nodes, &mut hash_values);
         didp_mpi::make_assignment(&hash_values, n_ranks, &mut assignments);
         didp_mpi::compute_assignemnt_distribution(
@@ -208,9 +208,8 @@ fn main_with_cost_type<T>(
 
         println!("No abstraction, stddev = {}", no_abstraction_stddev);
 
-        for i in [3, 2, 1] {
-            let p = (i as f64) * 0.1;
-            let mut hash_function = create_set_zobrist_hash(&model, Some(p));
+        for p in [0.3, 0.2, 0.1] {
+            let mut hash_function = didp_mpi::create_masked_fx_hash(&model, Some(p));
             didp_mpi::compute_hash_values(&mut hash_function, &result.nodes, &mut hash_values);
             didp_mpi::make_assignment(&hash_values, n_ranks, &mut assignments);
             didp_mpi::compute_assignemnt_distribution(

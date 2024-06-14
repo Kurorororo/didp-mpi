@@ -203,6 +203,7 @@ where
 }
 pub enum HashType {
     Fx,
+    MaskedFx,
     SetZobrist,
     SetZobristWithOthers,
     ThreeBitsFieldZobrist,
@@ -243,6 +244,7 @@ impl AdditionalCommonParameters {
                 let t = t.as_str().expect("hash_type must be string");
                 match t {
                     "fx" => HashType::Fx,
+                    "masked_fx" => HashType::MaskedFx,
                     "set_zobrist" => HashType::SetZobrist,
                     "set_zobrist_with_others" => HashType::SetZobristWithOthers,
                     "4bits_field_zobrist" => HashType::FourBitsFieldZobrist,

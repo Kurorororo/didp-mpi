@@ -30,7 +30,7 @@ pub use distributed_id_chain::DistributedTransitionIdChain;
 pub use hac::Hac;
 pub use hash_functions::{
     create_3bits_field_zobrist_hash, create_4bits_field_zobrist_hash, create_fx_hash,
-    create_set_zobrist_hash, create_set_zobrist_hash_with_others,
+    create_masked_fx_hash, create_set_zobrist_hash, create_set_zobrist_hash_with_others,
 };
 pub use hd_acps::HdAcps;
 pub use hd_apps::HdApps;

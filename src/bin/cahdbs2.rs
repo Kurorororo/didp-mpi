@@ -176,6 +176,19 @@ where
                 hash_function,
             );
         }
+        HashType::MaskedFx => {
+            let hash_function = didp_mpi::create_masked_fx_hash(
+                &model,
+                additional_parameters.abstraction_probability,
+            );
+            main_with_cost_type_and_hash_function(
+                universe,
+                model,
+                parameters,
+                f_evaluator_type,
+                hash_function,
+            );
+        }
         HashType::SetZobrist => {
             let hash_function = didp_mpi::create_set_zobrist_hash(
                 &model,
