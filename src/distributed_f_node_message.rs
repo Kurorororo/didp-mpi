@@ -52,6 +52,21 @@ where
     }
 }
 
+impl<T> From<DistributedFNode<T>> for DistributedFNodeMessage<T>
+where
+    T: Numeric,
+{
+    fn from(node: DistributedFNode<T>) -> Self {
+        Self {
+            state: StateWithHashableSignatureVariables::from(node.state().clone()),
+            g: node.g,
+            h: node.h,
+            f: node.f,
+            transition_id_chain: (*node.get_distributed_transition_id_chain()).clone(),
+        }
+    }
+}
+
 impl<T> GetDistributedTransitionIdChain for DistributedFNodeMessage<T>
 where
     T: Numeric,

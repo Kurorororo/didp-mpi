@@ -9,6 +9,7 @@ mod hd_apps;
 mod hd_beam_search2;
 mod hd_best_first_search;
 mod hd_hac;
+mod initiation;
 mod io;
 mod is_float;
 mod key_value_statistics;
@@ -36,6 +37,10 @@ pub use hd_apps::HdApps;
 pub use hd_beam_search2::hd_beam_search2;
 pub use hd_best_first_search::HdBestFirstSearch;
 pub use hd_hac::HdHac;
+pub use initiation::{
+    cbfs_initiator, compute_assignemnt_distribution, compute_hash_values, make_assignment,
+    AssignemntDistribution, InitiationParameters, InitiationResult,
+};
 pub use io::{
     dump_solution, dump_statistics, load_parameters_from_map, read_model, write_solution,
     AdditionalCommonParameters, HashType,

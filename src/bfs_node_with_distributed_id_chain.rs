@@ -17,8 +17,8 @@ where
 pub struct NodeGenerationResult<N> {
     pub node: Option<N>,
     pub is_pruned_by_bound: bool,
-    pub n_dominated_before_closed: usize,
-    pub n_dominated_after_closed: usize,
+    pub dominated_before_closed: usize,
+    pub dominated_after_closed: usize,
 }
 
 impl<N> Default for NodeGenerationResult<N> {
@@ -26,8 +26,8 @@ impl<N> Default for NodeGenerationResult<N> {
         Self {
             node: None,
             is_pruned_by_bound: false,
-            n_dominated_before_closed: 0,
-            n_dominated_after_closed: 0,
+            dominated_before_closed: 0,
+            dominated_after_closed: 0,
         }
     }
 }

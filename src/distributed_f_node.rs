@@ -232,8 +232,8 @@ where
         NodeGenerationResult {
             node: result.information,
             is_pruned_by_bound,
-            n_dominated_before_closed,
-            n_dominated_after_closed,
+            dominated_before_closed: n_dominated_before_closed,
+            dominated_after_closed: n_dominated_after_closed,
         }
     }
 
@@ -941,8 +941,8 @@ mod tests {
         );
 
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_some());
         let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
@@ -1005,8 +1005,8 @@ mod tests {
             primal_bound,
         );
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_some());
         let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
@@ -1072,8 +1072,8 @@ mod tests {
             primal_bound,
         );
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_none());
     }
 
@@ -1143,8 +1143,8 @@ mod tests {
             primal_bound,
         );
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_some());
         let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
@@ -1161,8 +1161,8 @@ mod tests {
             primal_bound,
         );
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 1);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 1);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_some());
         let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
@@ -1237,8 +1237,8 @@ mod tests {
             primal_bound,
         );
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_some());
         let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
@@ -1255,8 +1255,8 @@ mod tests {
             primal_bound,
         );
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 1);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 1);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_some());
         let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
@@ -1331,8 +1331,8 @@ mod tests {
             primal_bound,
         );
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_some());
         let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
@@ -1348,8 +1348,8 @@ mod tests {
             primal_bound,
         );
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_none());
     }
 
@@ -1419,8 +1419,8 @@ mod tests {
             primal_bound,
         );
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_some());
         let successor = result.node.unwrap();
         assert_eq!(successor.state(), &expected_state);
@@ -1436,8 +1436,8 @@ mod tests {
             primal_bound,
         );
         assert!(!result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_none());
     }
 
@@ -1494,8 +1494,8 @@ mod tests {
             primal_bound,
         );
         assert!(result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_none());
     }
 
@@ -1553,8 +1553,8 @@ mod tests {
             primal_bound,
         );
         assert!(result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_none());
     }
 
@@ -1611,8 +1611,8 @@ mod tests {
             primal_bound,
         );
         assert!(result.is_pruned_by_bound);
-        assert_eq!(result.n_dominated_before_closed, 0);
-        assert_eq!(result.n_dominated_after_closed, 0);
+        assert_eq!(result.dominated_before_closed, 0);
+        assert_eq!(result.dominated_after_closed, 0);
         assert!(result.node.is_none());
     }
 

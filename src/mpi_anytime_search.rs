@@ -1167,15 +1167,14 @@ where
                     }
 
                     self.solution_manager
-                        .increase_dominated_before_closed(result.n_dominated_before_closed);
+                        .increase_dominated_before_closed(result.dominated_before_closed);
                     self.solution_manager
-                        .increase_dominated_after_closed(result.n_dominated_after_closed);
+                        .increase_dominated_after_closed(result.dominated_after_closed);
 
                     if let Some(node) = result.node {
                         keep_buffer.push(node);
 
-                        if result.n_dominated_before_closed == 0
-                            && result.n_dominated_after_closed == 0
+                        if result.dominated_before_closed == 0 && result.dominated_after_closed == 0
                         {
                             self.solution_manager.increment_generated();
                         }
