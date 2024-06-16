@@ -1,3 +1,4 @@
+mod aah;
 mod bfs_node_with_distributed_id_chain;
 mod distributed_f_node;
 mod distributed_f_node_message;
@@ -23,6 +24,10 @@ mod statistics;
 mod timestamped_communicator;
 mod util;
 
+pub use aah::{
+    aah, compute_assignemnt_distribution, compute_hash_values, make_assignment, AahParameters,
+    AssignemntDistribution,
+};
 pub use bfs_node_with_distributed_id_chain::NodeGenerationResult;
 pub use distributed_f_node::{DistributedFNode, FNodeEvaluators};
 pub use distributed_f_node_message::DistributedFNodeMessage;
@@ -30,17 +35,15 @@ pub use distributed_id_chain::DistributedTransitionIdChain;
 pub use hac::Hac;
 pub use hash_functions::{
     create_3bits_field_zobrist_hash, create_4bits_field_zobrist_hash, create_fx_hash,
-    create_masked_fx_hash, create_set_zobrist_hash, create_set_zobrist_hash_with_others,
+    create_masked_fx_hash, create_set_masks, create_set_zobrist_hash,
+    create_set_zobrist_hash_with_others,
 };
 pub use hd_acps::HdAcps;
 pub use hd_apps::HdApps;
 pub use hd_beam_search2::hd_beam_search2;
 pub use hd_best_first_search::HdBestFirstSearch;
 pub use hd_hac::HdHac;
-pub use initiation::{
-    cbfs_initiator, compute_assignemnt_distribution, compute_hash_values, make_assignment,
-    AssignemntDistribution, InitiationParameters, InitiationResult,
-};
+pub use initiation::{cbfs_initiator, InitiationParameters, InitiationResult};
 pub use io::{
     dump_solution, dump_statistics, load_parameters_from_map, read_model, write_solution,
     AdditionalCommonParameters, HashType,

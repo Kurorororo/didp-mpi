@@ -19,6 +19,10 @@ pub struct DistributedTransitionIdChain {
 }
 
 impl DistributedTransitionIdChain {
+    pub fn get_parent_id(&self) -> Option<usize> {
+        self.data.as_ref().map(|data| data.parent_chain_id)
+    }
+
     pub fn generate_successor(&self, transition_id: usize, forced: bool) -> Self {
         let data = DistributedTransitionIdChainData {
             parent_chain_id: self.id.get().unwrap(),
@@ -167,6 +171,21 @@ mod tests {
         assert_eq!(chain.id.get(), None);
         assert_eq!(chain.parent_rank.get(), None);
         assert_eq!(chain.data, None);
+    }
+
+    #[test]
+    fn test_get_parent_id_some() {
+        let chain = DistributedTransitionIdChain::default();
+        chain.id.set(Some(0));
+        let successor = chain.generate_successor(0, false);
+
+        assert_eq!(successor.get_parent_id(), Some(0));
+    }
+
+    #[test]
+    fn test_get_parent_id_none() {
+        let chain = DistributedTransitionIdChain::default();
+        assert_eq!(chain.get_parent_id(), None);
     }
 
     #[test]

@@ -5,17 +5,19 @@ use dypdl_heuristic_search::search_algorithm::{
     util::{self, TimeKeeper},
     SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId,
 };
-use mpi::Rank;
 use std::collections::BinaryHeap;
 use std::fmt::{Debug, Display};
 use std::iter::Iterator;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
 use crate::bfs_node_with_distributed_id_chain::NodeGenerationResult;
 use crate::distributed_id_chain::DistributedTransitionIdChain;
 use crate::statistics::Statistics;
+use crate::{
+    bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain,
+    distributed_id_chain::GetDistributedTransitionIdChain,
+};
 
 #[derive(Clone, Debug, Default)]
 pub struct InitiationParameters {
@@ -23,16 +25,17 @@ pub struct InitiationParameters {
     pub node_limit: Option<usize>,
     pub quiet: bool,
 }
+
 pub struct InitiationResult<T, N, V>
 where
     T: Numeric,
     N: StateInformation<T>,
     V: TransitionInterface,
 {
-    pub primal_bound: Option<T>,
     pub n_nodes: usize,
     pub nodes: Vec<(Rc<HashableSignatureVariables>, Vec<Rc<N>>)>,
     pub id_to_chain_node: Vec<Rc<DistributedTransitionIdChain>>,
+    pub id_to_depth: Vec<usize>,
     pub solution: Solution<T, TransitionWithId<V>>,
     pub statistics: Statistics,
 }
@@ -98,7 +101,7 @@ where
 
 pub fn cbfs_initiator<T, N, E, B, V>(
     input: SearchInput<'_, N, TransitionWithId<V>>,
-    successor_evaluator: E,
+    mut successor_evaluator: E,
     mut base_cost_evaluator: B,
     parameters: InitiationParameters,
 ) -> InitiationResult<T, N, V>
@@ -106,7 +109,7 @@ where
     T: Numeric + Ord + Display,
     <T as FromStr>::Err: Debug,
     N: BfsNodeWithDistributedIdChain<T>,
-    E: Fn(
+    E: FnMut(
         StateInRegistry,
         T,
         &TransitionWithId<V>,
@@ -143,10 +146,12 @@ where
     let mut open = vec![BinaryHeap::with_capacity(1)];
     let mut registry = StateRegistry::new(model.clone());
     let mut id_to_chain_node = Vec::new();
+    let mut id_to_depth = Vec::new();
 
     if let Some(node_limit) = node_limit {
         registry.reserve(node_limit);
         id_to_chain_node.reserve(node_limit);
+        id_to_depth.reserve(node_limit);
     }
 
     let mut solution = Solution::default();
@@ -230,6 +235,7 @@ where
                 .id
                 .set(Some(id_to_chain_node.len()));
             id_to_chain_node.push(node.get_rc_distributed_transition_id_chain().clone());
+            id_to_depth.push(current_depth);
 
             let mut no_successor = false;
 
@@ -310,6 +316,7 @@ where
             if no_successor {
                 node.get_distributed_transition_id_chain().id.set(None);
                 id_to_chain_node.pop();
+                id_to_depth.pop();
             }
         }
 
@@ -358,77 +365,21 @@ where
     solution.time = time_keeper.elapsed_time();
 
     InitiationResult {
-        primal_bound: solution.cost,
         n_nodes: registry_size,
         nodes: extract_nodes(&mut registry, solution.cost),
         id_to_chain_node,
+        id_to_depth,
         solution,
         statistics,
     }
 }
 
-pub fn compute_hash_values<H, V>(
-    hash_function: &mut H,
-    nodes: &[(Rc<HashableSignatureVariables>, V)],
-    result: &mut Vec<u64>,
-) where
-    H: FnMut(&HashableSignatureVariables) -> u64,
-{
-    result.clear();
-    result.reserve(nodes.len());
-
-    for node in nodes {
-        result.push(hash_function(&node.0));
-    }
-}
-
-pub fn make_assignment(hash_values: &[u64], n_ranks: Rank, result: &mut Vec<Rank>) {
-    result.clear();
-    result.reserve(hash_values.len());
-    let n_ranks = n_ranks as u64;
-
-    for hash_value in hash_values.iter() {
-        result.push((hash_value % n_ranks) as Rank);
-    }
-}
-
-#[derive(Clone, Debug, Default)]
-pub struct AssignemntDistribution {
-    pub rank_to_size: Vec<usize>,
-    pub max_size: usize,
-    pub min_size: usize,
-    pub max_rank: Rank,
-    pub min_rank: Rank,
-}
-
-pub fn compute_assignemnt_distribution<K, V>(
-    n_ranks: Rank,
-    ranks: &[Rank],
-    nodes: &[(K, Vec<V>)],
-    result: &mut AssignemntDistribution,
-) {
-    let n_ranks = n_ranks as usize;
-    result.rank_to_size.clear();
-    result.rank_to_size.resize(n_ranks, 0);
-    result.max_size = 0;
-    result.max_rank = 0;
-
-    for (rank, nodes) in ranks.iter().zip(nodes) {
-        result.rank_to_size[*rank as usize] += nodes.1.len();
-
-        if result.rank_to_size[*rank as usize] > result.max_size {
-            result.max_size = result.rank_to_size[*rank as usize];
-            result.max_rank = *rank;
-        }
-    }
-
-    result.min_size = result.max_size;
-    result.min_rank = result.max_rank;
-
-    for (rank, size) in result.rank_to_size.iter().enumerate() {
-        if *size < result.min_size {
-            result.min_size = *size;
-            result.min_rank = rank as Rank;
-        }
+pub fn get_depth<N: GetDistributedTransitionIdChain>(node: &N, id_to_depth: &[usize]) -> usize {
+    if let Some(id) = node.get_distributed_transition_id_chain().id.get() {
+        id_to_depth[id]
+    } else if let Some(id) = node.get_distributed_transition_id_chain().get_parent_id() {
+        id_to_depth[id] + 1
+    } else {
+        0
     }
 }

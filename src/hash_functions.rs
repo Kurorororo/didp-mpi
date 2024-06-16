@@ -18,8 +18,10 @@ pub fn create_fx_hash() -> impl Fn(&HashableSignatureVariables) -> u64 {
     }
 }
 
-fn create_set_masks(model: &Model, seed: u64, zero_probability: f64) -> Vec<Vec<u32>> {
-    let mut rng = Pcg64Mcg::seed_from_u64(seed);
+pub fn create_set_masks(model: &Model, zero_probability: f64) -> Vec<Vec<u32>> {
+    const SEED: u64 = 42;
+
+    let mut rng = Pcg64Mcg::seed_from_u64(SEED);
     let n = model.state_metadata.number_of_set_variables();
     let mut masks = Vec::with_capacity(n);
 
@@ -49,14 +51,8 @@ fn create_set_masks(model: &Model, seed: u64, zero_probability: f64) -> Vec<Vec<
     masks
 }
 
-pub fn create_masked_fx_hash(
-    model: &Model,
-    zero_probability: Option<f64>,
-) -> impl Fn(&HashableSignatureVariables) -> u64 {
-    const RANDOM_SEED: u64 = 42;
+pub fn create_masked_fx_hash(masks: Vec<Vec<u32>>) -> impl Fn(&HashableSignatureVariables) -> u64 {
     const SEED: u32 = 0x5583c24d;
-
-    let masks = create_set_masks(model, RANDOM_SEED, zero_probability.unwrap_or(0.0));
 
     move |signature: &HashableSignatureVariables| -> u64 {
         let mut hasher = FxHasher::default();

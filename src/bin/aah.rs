@@ -209,7 +209,8 @@ fn main_with_cost_type<T>(
         println!("No abstraction, stddev = {}", no_abstraction_stddev);
 
         for p in [0.3, 0.2, 0.1] {
-            let mut hash_function = didp_mpi::create_masked_fx_hash(&model, Some(p));
+            let masks = didp_mpi::create_set_masks(&model, p);
+            let mut hash_function = didp_mpi::create_masked_fx_hash(masks);
             didp_mpi::compute_hash_values(&mut hash_function, &result.nodes, &mut hash_values);
             didp_mpi::make_assignment(&hash_values, n_ranks, &mut assignments);
             didp_mpi::compute_assignemnt_distribution(

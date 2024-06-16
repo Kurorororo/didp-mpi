@@ -12,7 +12,7 @@ use std::process;
 use std::str::FromStr;
 use yaml_rust::{Yaml, YamlLoader};
 
-use crate::Statistics;
+use crate::{aah::AahParameters, InitiationParameters, Statistics};
 
 pub fn read_model(args: &mut Args) -> Model {
     let domain = args.next().unwrap_or_else(|| {
@@ -278,6 +278,63 @@ impl AdditionalCommonParameters {
             hash_type,
             abstraction_probability,
             count_bound_to_expanded,
+        }
+    }
+}
+
+impl InitiationParameters {
+    pub fn load_from_map(map: &LinkedHashMap<Yaml, Yaml>) -> Self {
+        let time_limit = map
+            .get(&yaml_rust::Yaml::from_str("time_limit"))
+            .map(|value| didp_yaml::util::get_numeric(value).unwrap());
+        let quiet = match map.get(&yaml_rust::Yaml::from_str("quiet")) {
+            Some(Yaml::Boolean(value)) => *value,
+            None => false,
+            value => {
+                panic!("expected Boolean, but found `{:?}`", value)
+            }
+        };
+        let node_limit = match map.get(&Yaml::from_str("node_limit")) {
+            Some(Yaml::Integer(value)) => Some(*value as usize),
+            None => Some(1000000),
+            value => {
+                panic!("expected Integer for `node_limit`, but found `{:?}`", value)
+            }
+        };
+
+        Self {
+            time_limit,
+            quiet,
+            node_limit,
+        }
+    }
+}
+
+impl AahParameters {
+    pub fn load_from_map(map: &LinkedHashMap<Yaml, Yaml>) -> Self {
+        let max_probability = map
+            .get(&Yaml::String("max_probability".into()))
+            .map(|x| x.as_f64().expect("max_probability must be a float"))
+            .unwrap_or(1.0);
+        let step_size = map
+            .get(&Yaml::String("step_size".into()))
+            .map(|x| x.as_f64().expect("step_size must be a float"))
+            .unwrap_or(0.1);
+        let threshold_ratio_to_average = map
+            .get(&Yaml::String("threshold_ratio_to_average".into()))
+            .map(|x| {
+                x.as_f64()
+                    .expect("threshold_ratio_to_average must be a float")
+            });
+        let threshold_ratio_to_base = map
+            .get(&Yaml::String("threshold_ratio_to_base".into()))
+            .map(|x| x.as_f64().expect("threshold_ratio_to_base must be a float"));
+
+        Self {
+            max_probability,
+            step_size,
+            threshold_ratio_to_average,
+            threshold_ratio_to_base,
         }
     }
 }

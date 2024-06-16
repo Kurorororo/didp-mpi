@@ -1,7 +1,8 @@
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::search_algorithm::{
-    data_structure::{self, HashableSignatureVariables, StateWithHashableSignatureVariables}, SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId
+    data_structure::{self, HashableSignatureVariables, StateWithHashableSignatureVariables},
+    SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId,
 };
 use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
 use std::collections::BinaryHeap;
@@ -10,8 +11,6 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::node_communicator::TimeStampedNodeDepthCommunicator;
-use crate::node_data_type::NodeDatatype;
 use crate::statistics::Statistics;
 use crate::{
     bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
@@ -23,6 +22,8 @@ use crate::{
         MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters,
     },
 };
+use crate::{initiation, node_data_type::NodeDatatype};
+use crate::{node_communicator::TimeStampedNodeDepthCommunicator, InitiationResult};
 
 pub struct HdHac<'a, T, N, M, L, R, B, F, V = Transition>
 where
@@ -50,8 +51,8 @@ where
     T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
-    N: BfsNodeWithDistributedIdChain<T> + From<M>,
-    M: Clone + NodeDatatype<T>,
+    N: BfsNodeWithDistributedIdChain<T> + From<M> + Clone,
+    M: Clone + NodeDatatype<T> + From<N>,
     L: FnMut(
         StateInRegistry,
         T,
@@ -73,12 +74,16 @@ where
     Transition: From<V> + From<TransitionWithId<V>>,
     TransitionWithId<V>: Clone,
 {
-    const TAG_NODE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET;
-    const TAG_TIME_OUT: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 1;
-    const TAG_TIME_OUT_ACK: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 2;
+    const TAG_N_INITIAL_CLOSED_NODES: Tag =
+        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET;
+    const TAG_N_INITIAL_OPEN_NODES: Tag =
+        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 1;
+    const TAG_NODE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 2;
+    const TAG_TIME_OUT: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 3;
+    const TAG_TIME_OUT_ACK: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 4;
     const TAG_TERMINATION_DETECTION: Tag =
-        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 3;
-    const TAG_TERMINATE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 4;
+        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 5;
+    const TAG_TERMINATE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 6;
 
     /// Creates a new HDACPS solver.
     pub fn new(
@@ -129,6 +134,124 @@ where
         }
     }
 
+    pub fn distriute_initial_nodes(
+        &mut self,
+        initiation_result: InitiationResult<T, N, V>,
+        ranks: &[Rank],
+    ) {
+        self.search.initiate(&initiation_result);
+
+        let mut rank_to_open_buffer = vec![Vec::default(); self.communicator.size() as usize];
+        let mut rank_to_closed_buffer = vec![Vec::default(); self.communicator.size() as usize];
+
+        for ((_, v), rank) in initiation_result.nodes.into_iter().zip(ranks) {
+            if *rank == self.communicator.rank() {
+                for node in v {
+                    let depth =
+                        initiation::get_depth(node.as_ref(), &initiation_result.id_to_depth);
+
+                    if depth == 0 {
+                        continue;
+                    }
+
+                    if node.is_closed() {
+                        self.search.close_node((*node).clone());
+                    } else {
+                        self.open_node((*node).clone(), depth);
+                    }
+                }
+            } else {
+                for node in v {
+                    let depth =
+                        initiation::get_depth(node.as_ref(), &initiation_result.id_to_depth);
+
+                    if depth == 0 {
+                        continue;
+                    }
+
+                    let message = M::from((*node).clone());
+                    message.set_parent_rank(self.communicator.rank());
+
+                    if node.is_closed() {
+                        rank_to_closed_buffer[*rank as usize].push((message, depth));
+                    } else {
+                        rank_to_open_buffer[*rank as usize].push((message, depth));
+                    }
+                }
+            }
+        }
+
+        for (rank, buffer) in rank_to_closed_buffer.into_iter().enumerate() {
+            let rank = rank as Rank;
+
+            if rank != self.communicator.rank() {
+                let destination_process = self.communicator.process_at_rank(rank);
+                let n_nodes = buffer.len();
+                destination_process.send_with_tag(&n_nodes, Self::TAG_N_INITIAL_CLOSED_NODES);
+
+                for (message, depth) in buffer {
+                    self.node_communicator.send(rank, &message, depth);
+                }
+            }
+        }
+
+        for (rank, buffer) in rank_to_open_buffer.into_iter().enumerate() {
+            let rank = rank as Rank;
+
+            if rank != self.communicator.rank() {
+                let destination_process = self.communicator.process_at_rank(rank);
+                let n_nodes = buffer.len();
+                destination_process.send_with_tag(&n_nodes, Self::TAG_N_INITIAL_OPEN_NODES);
+
+                for (message, depth) in buffer {
+                    self.node_communicator.send(rank, &message, depth);
+                }
+            }
+        }
+    }
+
+    pub fn receive_initial_nodes(&mut self, source_rank: Rank) {
+        let source = self.communicator.process_at_rank(source_rank);
+        let mut n_closed_nodes = 0;
+        source
+            .receive_into_with_tag::<usize>(&mut n_closed_nodes, Self::TAG_N_INITIAL_CLOSED_NODES);
+
+        for _ in 0..n_closed_nodes {
+            self.search.increment_received();
+
+            if let Some((node, _)) = self
+                .node_communicator
+                .receive(source_rank, self.search.get_primal_bound())
+            {
+                let node = N::from(node);
+                self.search.close_node(node);
+            }
+        }
+
+        let mut n_open_nodes = 0;
+        source.receive_into_with_tag::<usize>(&mut n_open_nodes, Self::TAG_N_INITIAL_OPEN_NODES);
+
+        for _ in 0..n_open_nodes {
+            self.receive_node(source_rank);
+        }
+    }
+
+    pub fn close_root_node(&mut self, node: M) {
+        self.search.close_root_node(node)
+    }
+
+    fn open_node(&mut self, node: N, depth: usize) {
+        if let Some(node) = self.search.open_node(node) {
+            self.open.push((node.clone(), depth));
+
+            while depth >= self.layered_open.len() {
+                self.layered_open.push(BinaryHeap::new());
+            }
+
+            self.layered_open[depth].push(node);
+        }
+    }
+
     fn receive_node(&mut self, source_rank: Rank) {
         self.search.increment_received();
 
@@ -144,16 +267,7 @@ where
             .receive(source_rank, self.search.get_primal_bound())
         {
             let node = N::from(node);
-
-            if let Some(node) = self.search.open_node(node) {
-                self.open.push((node.clone(), depth));
-
-                while depth >= self.layered_open.len() {
-                    self.layered_open.push(BinaryHeap::new());
-                }
-
-                self.layered_open[depth].push(node);
-            }
+            self.open_node(node, depth);
         }
     }
 

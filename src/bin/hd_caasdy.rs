@@ -119,10 +119,11 @@ where
             );
         }
         HashType::MaskedFx => {
-            let hash_function = didp_mpi::create_masked_fx_hash(
+            let masks = didp_mpi::create_set_masks(
                 &model,
-                additional_parameters.abstraction_probability,
+                additional_parameters.abstraction_probability.unwrap_or(0.0),
             );
+            let hash_function = didp_mpi::create_masked_fx_hash(masks);
             main_with_cost_type_and_hash_function(
                 universe,
                 model,

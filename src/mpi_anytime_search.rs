@@ -25,7 +25,6 @@ use std::rc::Rc;
 use std::str::FromStr;
 
 use crate::is_float::IsFloat;
-use crate::node_data_type::NodeDatatype;
 use crate::partial_solution;
 use crate::partial_solution::PartialSolutionTags;
 use crate::statistics::Statistics;
@@ -37,6 +36,7 @@ use crate::{
     distributed_id_chain::DistributedTransitionIdChain,
     key_value_statistics::KeyValueStatisticsTags,
 };
+use crate::{node_data_type::NodeDatatype, InitiationResult};
 
 #[derive(Copy, Clone, Debug, Default)]
 struct NTransitionIdsAndCostForSend<T>(usize, T);
@@ -346,6 +346,18 @@ where
             quiet,
             time_keeper,
         }
+    }
+
+    pub fn initiate_solution(&mut self, solution: Solution<T, TransitionWithId<V>>) {
+        self.solution = solution;
+        self.primal_bound = self.solution.cost;
+        self.local_solution_cost = self.solution.cost;
+        self.broadcast_primal_bound();
+    }
+
+    pub fn initiate_statistics(&mut self, statistics: Statistics) {
+        self.statistics = statistics;
+        self.statistics.generated = 0;
     }
 
     pub fn elapsed_time(&self) -> f64 {
@@ -1004,6 +1016,15 @@ where
         }
     }
 
+    pub fn initiate(&mut self, initiation_result: &InitiationResult<T, N, V>) {
+        self.id_to_chain_node
+            .clone_from(&initiation_result.id_to_chain_node);
+        self.solution_manager
+            .initiate_solution(initiation_result.solution.clone());
+        self.solution_manager
+            .initiate_statistics(initiation_result.statistics.clone());
+    }
+
     pub fn elapsed_time(&self) -> f64 {
         self.solution_manager.elapsed_time()
     }
@@ -1053,6 +1074,15 @@ where
         Self::open_node_inner(node, &mut self.registry, &mut self.solution_manager)
     }
 
+    pub fn close_node(&mut self, node: N) {
+        let result = self.registry.insert(node);
+
+        if let Some(node) = result.information {
+            self.solution_manager.increment_generated();
+            node.close();
+        }
+    }
+
     pub fn generate_root_node(&mut self, node: Option<M>) -> Option<Rc<N>> {
         if let Some(node) = node {
             let hash_value = (self.hash_function)(node.signature());
@@ -1086,9 +1116,18 @@ where
                 None
             }
         } else {
-            self.solution_manager.solution.is_infeasible = true;
-
             None
+        }
+    }
+
+    pub fn close_root_node(&mut self, node: M) {
+        let hash_value = (self.hash_function)(node.signature());
+        let assigned_rank = (hash_value % self.communicator.size() as u64) as Rank;
+
+        if assigned_rank == self.communicator.rank() {
+            self.solution_manager.increment_generated();
+            let node = N::from(node);
+            self.close_node(node)
         }
     }
 
