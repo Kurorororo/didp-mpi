@@ -147,8 +147,10 @@ where
 
         let (solution, statistics_list) = if let Some(masks) = aah_result.masks {
             let hash_function = didp_mpi::create_masked_fx_hash(masks);
+            let offset = time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
+            solver.set_time_offset(offset);
 
             solver.distriute_initial_nodes(initiation_result, &aah_result.assignments);
 
@@ -156,8 +158,7 @@ where
                 solver.close_root_node(node);
             }
 
-            let (mut solution, statistics_list) = solver.search();
-            solution.time = time_keeper.elapsed_time();
+            let (solution, statistics_list) = solver.search();
 
             if additional_parameters.count_bound_to_expanded {
                 let bound_to_expanded = solver.gather_bound_to_expanded();
@@ -169,8 +170,10 @@ where
             (solution, statistics_list)
         } else {
             let hash_function = didp_mpi::create_fx_hash();
+            let offset = time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
+            solver.set_time_offset(offset);
 
             solver.distriute_initial_nodes(initiation_result, &aah_result.assignments);
 
@@ -178,8 +181,7 @@ where
                 solver.close_root_node(node);
             }
 
-            let (mut solution, statistics_list) = solver.search();
-            solution.time = time_keeper.elapsed_time();
+            let (solution, statistics_list) = solver.search();
 
             if additional_parameters.count_bound_to_expanded {
                 let bound_to_expanded = solver.gather_bound_to_expanded();
@@ -210,8 +212,10 @@ where
             root_process.broadcast_into(&mut p);
             let masks = didp_mpi::create_set_masks(&input.generator.model, p);
             let hash_function = didp_mpi::create_masked_fx_hash(masks);
+            let offset = time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
+            solver.set_time_offset(offset);
             solver.receive_initial_nodes(0);
 
             if let Some(node) = root_node {
@@ -225,8 +229,10 @@ where
             }
         } else {
             let hash_function = didp_mpi::create_fx_hash();
+            let offset = time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
+            solver.set_time_offset(offset);
             solver.receive_initial_nodes(0);
 
             if let Some(node) = root_node {

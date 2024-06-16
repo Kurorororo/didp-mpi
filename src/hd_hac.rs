@@ -134,6 +134,10 @@ where
         }
     }
 
+    pub fn set_time_offset(&mut self, offset: f64) {
+        self.search.set_time_offset(offset);
+    }
+
     pub fn distriute_initial_nodes(
         &mut self,
         initiation_result: InitiationResult<T, N, V>,

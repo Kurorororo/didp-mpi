@@ -231,6 +231,7 @@ where
     primal_bound: Option<T>,
     bound_to_expanded: FxHashMap<T, usize>,
     solution: Solution<T, TransitionWithId<V>>,
+    time_offset: f64,
     statistics: Statistics,
     count_bound_to_expanded: bool,
     local_solution_cost: Option<T>,
@@ -331,6 +332,7 @@ where
             primal_bound,
             count_bound_to_expanded,
             solution: Solution::default(),
+            time_offset: 0.0,
             statistics: Statistics::default(),
             bound_to_expanded: FxHashMap::default(),
             local_solution_cost: None,
@@ -360,8 +362,12 @@ where
         self.statistics.generated = 0;
     }
 
+    pub fn set_time_offset(&mut self, offset: f64) {
+        self.time_offset = offset;
+    }
+
     pub fn elapsed_time(&self) -> f64 {
-        self.time_keeper.elapsed_time()
+        self.time_keeper.elapsed_time() + self.time_offset
     }
 
     pub fn check_time_limit(&self) -> bool {
@@ -384,7 +390,7 @@ where
     }
 
     pub fn increment_expanded(&mut self, bound: Option<T>) {
-        self.statistics.last_expanded_timestamp = self.time_keeper.elapsed_time();
+        self.statistics.last_expanded_timestamp = self.elapsed_time();
 
         if self.statistics.expanded == 0 {
             self.statistics.first_expanded_timestamp = self.statistics.last_expanded_timestamp;
@@ -413,7 +419,7 @@ where
     }
 
     pub fn increment_received(&mut self) {
-        self.statistics.last_received_timestamp = self.time_keeper.elapsed_time();
+        self.statistics.last_received_timestamp = self.elapsed_time();
 
         if self.statistics.received == 0 {
             self.statistics.first_received_timestamp = self.statistics.last_received_timestamp;
@@ -461,7 +467,7 @@ where
                     }
                 }),
         );
-        self.solution.time = self.time_keeper.elapsed_time();
+        self.solution.time = self.elapsed_time();
 
         if let Some(filename) = self.solution_filename.as_ref() {
             io::write_solution(&self.solution, filename);
@@ -857,7 +863,7 @@ where
             }
 
             if self.solution.cost.is_some() {
-                self.solution.time = self.time_keeper.elapsed_time();
+                self.solution.time = self.elapsed_time();
 
                 if let Some(filename) = self.solution_filename.as_ref() {
                     io::write_solution(&self.solution, filename);
@@ -1023,6 +1029,10 @@ where
             .initiate_solution(initiation_result.solution.clone());
         self.solution_manager
             .initiate_statistics(initiation_result.statistics.clone());
+    }
+
+    pub fn set_time_offset(&mut self, offset: f64) {
+        self.solution_manager.set_time_offset(offset)
     }
 
     pub fn elapsed_time(&self) -> f64 {
