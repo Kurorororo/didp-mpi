@@ -81,7 +81,7 @@ where
     let mut root_node = None;
     mem::swap(&mut input.node, &mut root_node);
     let root_process = communicator.process_at_rank(0);
-    let time_keepr = search_algorithm::util::TimeKeeper::default();
+    let time_keeper = search_algorithm::util::TimeKeeper::default();
 
     if communicator.rank() == 0 {
         let initiation_result = didp_mpi::cbfs_initiator(
@@ -122,7 +122,7 @@ where
         }
 
         if let Some(time_limit) = parameters.parameters.time_limit {
-            parameters.parameters.time_limit = Some(time_limit - time_keepr.elapsed_time());
+            parameters.parameters.time_limit = Some(time_limit - time_keeper.elapsed_time());
         }
 
         let aah_result = didp_mpi::aah(
@@ -157,7 +157,7 @@ where
             }
 
             let (mut solution, statistics_list) = solver.search();
-            solution.time = time_keepr.elapsed_time();
+            solution.time = time_keeper.elapsed_time();
 
             if additional_parameters.count_bound_to_expanded {
                 let bound_to_expanded = solver.gather_bound_to_expanded();
@@ -179,7 +179,7 @@ where
             }
 
             let (mut solution, statistics_list) = solver.search();
-            solution.time = time_keepr.elapsed_time();
+            solution.time = time_keeper.elapsed_time();
 
             if additional_parameters.count_bound_to_expanded {
                 let bound_to_expanded = solver.gather_bound_to_expanded();
