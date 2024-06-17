@@ -7,13 +7,70 @@ use crate::{
 };
 use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::search_algorithm::{
-    data_structure::StateWithHashableSignatureVariables, SearchInput, StateInRegistry,
+    data_structure::StateWithHashableSignatureVariables, FNode, SearchInput, StateInRegistry,
     StateRegistry, SuccessorGenerator, TransitionWithId,
 };
 use dypdl_heuristic_search::FEvaluatorType;
 use std::rc::Rc;
 
-pub fn make_input_and_dual_bound_evalautors<'a, T>(
+pub fn make_input_and_dual_bound_evaluators<'a, T>(
+    model: Model,
+    f_evaluator_type: FEvaluatorType,
+    primal_bound: Option<T>,
+) -> (
+    SearchInput<'a, FNode<T>>,
+    impl FnMut(
+        &FNode<T>,
+        Rc<Transition>,
+        &mut StateRegistry<T, FNode<T>>,
+        Option<T>,
+    ) -> Option<(Rc<FNode<T>>, bool)>,
+    impl FnMut(T, T) -> T,
+)
+where
+    T: Numeric + Ord,
+{
+    let model = Rc::new(model);
+    let generator = SuccessorGenerator::<Transition>::from_model(model.clone(), false);
+    let base_cost_evaluator = move |cost: T, base_cost| f_evaluator_type.eval(cost, base_cost);
+    let cost = match f_evaluator_type {
+        FEvaluatorType::Plus => T::zero(),
+        FEvaluatorType::Product => T::one(),
+        FEvaluatorType::Max => T::min_value(),
+        FEvaluatorType::Min => T::max_value(),
+        FEvaluatorType::Overwrite => T::zero(),
+    };
+    let h_model = model.clone();
+    let h_evaluator = move |state: &_| h_model.eval_dual_bound(state);
+    let f_evaluator = move |g, h, _: &_| f_evaluator_type.eval(g, h);
+    let node = FNode::<_>::generate_root_node(
+        model.target.clone(),
+        cost,
+        &model,
+        &h_evaluator,
+        &f_evaluator,
+        primal_bound,
+    );
+    let input = SearchInput {
+        node,
+        generator,
+        solution_suffix: &[],
+    };
+    let transition_evaluator =
+        move |node: &FNode<_>, transition, registry: &mut _, primal_bound| {
+            node.insert_successor_node(
+                transition,
+                registry,
+                &h_evaluator,
+                &f_evaluator,
+                primal_bound,
+            )
+        };
+
+    (input, transition_evaluator, base_cost_evaluator)
+}
+
+pub fn make_input_and_mpi_dual_bound_evalautors<'a, T>(
     model: Model,
     f_evaluator_type: FEvaluatorType,
     primal_bound: Option<T>,

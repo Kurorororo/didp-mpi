@@ -45,12 +45,14 @@ pub use hd_best_first_search::HdBestFirstSearch;
 pub use hd_hac::HdHac;
 pub use initiation::{cbfs_initiator, InitiationParameters, InitiationResult};
 pub use io::{
-    dump_solution, dump_statistics, load_parameters_from_map, read_model, write_solution,
-    AdditionalCommonParameters, HashType,
+    dump_solution, dump_statistics, load_bool_from_map, load_cabs_parameters_from_map,
+    load_f64_from_map, load_f_evaluator_type_from_map, load_parameters_from_map,
+    load_progressive_parameters_from_map, load_usize_from_map, read_config_yaml, read_model,
+    solve_and_dump_solutions, write_solution, AdditionalCommonParameters, HashType,
 };
 pub use is_float::IsFloat;
 pub use key_value_statistics::KeyValueStatistics;
 pub use mpi_anytime_search::{MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters};
 pub use node_data_type::NodeDatatype;
 pub use statistics::Statistics;
-pub use util::make_input_and_dual_bound_evalautors;
+pub use util::{make_input_and_dual_bound_evaluators, make_input_and_mpi_dual_bound_evalautors};

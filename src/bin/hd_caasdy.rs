@@ -8,11 +8,11 @@ use dypdl::{
     variable_type::{Numeric, OrderedContinuous},
 };
 use dypdl_heuristic_search::{
-    search_algorithm::data_structure::HashableSignatureVariables, FEvaluatorType, Parameters,
+    search_algorithm::{data_structure::HashableSignatureVariables, util::TimeKeeper},
+    FEvaluatorType, Parameters,
 };
 use mpi::{environment::Universe, traits::*};
 use std::fmt::{Debug, Display};
-use std::fs;
 use std::hash::Hash;
 use std::str::FromStr;
 
@@ -36,7 +36,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     CostToDump: From<T>,
     H: Fn(&HashableSignatureVariables) -> u64,
 {
-    let (input, evaluators) = didp_mpi::make_input_and_dual_bound_evalautors(
+    let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evalautors(
         model,
         f_evaluator_type,
         parameters.primal_bound,
@@ -98,7 +98,10 @@ where
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
 {
-    let (parameters, additional_parameters) = load_config_from_file::<T>(config_filename);
+    let yaml = didp_mpi::read_config_yaml(config_filename);
+    let map = yaml.as_hash().expect("Yaml file is not a hash");
+    let parameters = didp_mpi::load_parameters_from_map::<T>(map);
+    let additional_parameters = AdditionalCommonParameters::load_from_map(map);
 
     if let Some(buffer_size) = additional_parameters.buffer_size {
         universe.set_buffer_size(buffer_size);
@@ -192,28 +195,10 @@ where
     }
 }
 
-fn load_config_from_file<T>(filename: &str) -> (Parameters<T>, AdditionalCommonParameters)
-where
-    T: Numeric,
-    <T as FromStr>::Err: Debug,
-{
-    let config = fs::read_to_string(filename).unwrap_or_else(|e| {
-        panic!("Couldn't read a config file: {:?}", e);
-    });
-    let config = yaml_rust::YamlLoader::load_from_str(&config).unwrap_or_else(|e| {
-        panic!("Config file must be in YAML format: {:?}", e);
-    });
-    assert_eq!(config.len(), 1);
-    let yaml = &config[0];
-    let map = yaml.as_hash().expect("Yaml file is not a hash");
-    let parameters = didp_mpi::load_parameters_from_map::<T>(map);
-    let additional_common_parameters = AdditionalCommonParameters::load_from_map(map);
-
-    (parameters, additional_common_parameters)
-}
-
 fn main() {
+    let time_keepr = TimeKeeper::default();
     let universe = mpi::initialize().unwrap();
+    let rank = universe.world().rank();
 
     let mut args = std::env::args();
     args.next();
@@ -225,5 +210,9 @@ fn main() {
         CostType::Continuous => {
             main_with_cost_type::<OrderedContinuous>(universe, model, &config_filename)
         }
+    }
+
+    if rank == 0 {
+        println!("Total time: {}s", time_keepr.elapsed_time());
     }
 }

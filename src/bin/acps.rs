@@ -1,12 +1,10 @@
-use didp_mpi::{Hac, KeyValueStatistics};
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
     prelude::*,
     variable_type::{Numeric, OrderedContinuous},
 };
-use dypdl_heuristic_search::search_algorithm::util::TimeKeeper;
+use dypdl_heuristic_search::search_algorithm::{util::TimeKeeper, Acps};
 use std::fmt::{Debug, Display};
-use std::hash::Hash;
 use std::str::FromStr;
 
 #[cfg(not(target_env = "msvc"))]
@@ -18,7 +16,7 @@ static GLOBAL: Jemalloc = Jemalloc;
 
 fn main_with_cost_type<T>(model: Model, config_filename: &str)
 where
-    T: Numeric + Ord + Display + Hash + 'static,
+    T: Numeric + Ord + Display + 'static,
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
 {
@@ -26,8 +24,7 @@ where
     let map = yaml.as_hash().expect("Yaml file is not a hash");
     let parameters = didp_mpi::load_parameters_from_map::<T>(map);
     let f_evaluator_type = didp_mpi::load_f_evaluator_type_from_map(map);
-    let count_bound_to_expanded =
-        didp_mpi::load_bool_from_map(map, "count_bound_to_expanded").unwrap_or(false);
+    let progressive_parameters = didp_mpi::load_progressive_parameters_from_map(map);
 
     let (input, transition_evaluator, base_cost_evaluator) =
         didp_mpi::make_input_and_dual_bound_evaluators(
@@ -36,23 +33,18 @@ where
             parameters.primal_bound,
         );
 
-    let mut solver = Hac::new(
+    let mut solver = Acps::new(
         input,
         transition_evaluator,
         base_cost_evaluator,
         parameters,
-        count_bound_to_expanded,
+        progressive_parameters,
     );
 
     let solution =
         didp_mpi::solve_and_dump_solutions(&mut solver, "history.csv", "solution.yaml").unwrap();
 
     didp_mpi::dump_solution(&solution);
-
-    if count_bound_to_expanded {
-        let bound_to_expanded = KeyValueStatistics::from(solver.get_bound_to_expanded());
-        KeyValueStatistics::dump_to_csv(&[bound_to_expanded], "bound_to_expanded.csv").unwrap();
-    }
 }
 
 fn main() {

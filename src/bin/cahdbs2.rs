@@ -9,14 +9,14 @@ use dypdl::{
 };
 use dypdl_heuristic_search::{
     search_algorithm::{
-        data_structure::HashableSignatureVariables, Cabs, SearchInput, SuccessorGenerator,
-        TransitionWithId,
+        data_structure::HashableSignatureVariables, util::TimeKeeper, Cabs, SearchInput,
+        SuccessorGenerator, TransitionWithId,
     },
-    BeamSearchParameters, CabsParameters, FEvaluatorType, Search,
+    CabsParameters, FEvaluatorType, Search,
 };
 use mpi::{environment::Universe, traits::*};
 use std::fmt::{Debug, Display};
-use std::fs::{self, OpenOptions};
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::rc::Rc;
 use std::str::FromStr;
@@ -157,7 +157,10 @@ where
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
 {
-    let (parameters, additional_parameters) = load_config_from_file::<T>(config_filename);
+    let yaml = didp_mpi::read_config_yaml(config_filename);
+    let map = yaml.as_hash().expect("Yaml file is not a hash");
+    let parameters = didp_mpi::load_cabs_parameters_from_map::<T>(map);
+    let additional_parameters = AdditionalCommonParameters::load_from_map(map);
 
     if let Some(buffer_size) = additional_parameters.buffer_size {
         universe.set_buffer_size(buffer_size);
@@ -245,68 +248,10 @@ where
     }
 }
 
-fn load_config_from_file<T>(filename: &str) -> (CabsParameters<T>, AdditionalCommonParameters)
-where
-    T: Numeric,
-    <T as FromStr>::Err: Debug,
-{
-    let config = fs::read_to_string(filename).unwrap_or_else(|e| {
-        panic!("Couldn't read a config file: {:?}", e);
-    });
-    let config = yaml_rust::YamlLoader::load_from_str(&config).unwrap_or_else(|e| {
-        panic!("Config file must be in YAML format: {:?}", e);
-    });
-    assert_eq!(config.len(), 1);
-    let yaml = &config[0];
-    let map = yaml.as_hash().expect("Yaml file is not a hash");
-    let parameters = didp_mpi::load_parameters_from_map::<T>(map);
-    let additional_common_parameters = AdditionalCommonParameters::load_from_map(map);
-
-    let beam_size = match map.get(&yaml_rust::Yaml::from_str("initial_beam_size")) {
-        Some(yaml_rust::Yaml::Integer(value)) => *value as usize,
-        Some(value) => {
-            panic!(
-                "expected Integer for `initial_beam_size`, but found `{:?}`",
-                value
-            )
-        }
-        None => 1,
-    };
-    let keep_all_layers = match map.get(&yaml_rust::Yaml::from_str("keep_all_layers")) {
-        Some(yaml_rust::Yaml::Boolean(value)) => *value,
-        None => false,
-        value => {
-            panic!(
-                "expected Boolean for `keep_all_layers`, but found `{:?}`",
-                value
-            )
-        }
-    };
-    let max_beam_size = match map.get(&yaml_rust::Yaml::from_str("max_beam_size")) {
-        Some(yaml_rust::Yaml::Integer(value)) => Some(*value as usize),
-        Some(value) => {
-            panic!(
-                "expected Integer for `max_beam_size`, but found `{:?}`",
-                value
-            )
-        }
-        None => None,
-    };
-    let beam_search_parameters = BeamSearchParameters {
-        parameters,
-        beam_size,
-        keep_all_layers,
-    };
-    let parameters = CabsParameters {
-        max_beam_size,
-        beam_search_parameters,
-    };
-
-    (parameters, additional_common_parameters)
-}
-
 fn main() {
+    let time_keeper = TimeKeeper::default();
     let universe = mpi::initialize().unwrap();
+    let rank = universe.world().rank();
 
     let mut args = std::env::args();
     args.next();
@@ -318,5 +263,9 @@ fn main() {
         CostType::Continuous => {
             main_with_cost_type::<OrderedContinuous>(universe, model, &config_filename)
         }
+    }
+
+    if rank == 0 {
+        println!("Total time: {}s", time_keeper.elapsed_time());
     }
 }

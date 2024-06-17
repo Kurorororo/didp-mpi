@@ -8,11 +8,10 @@ use dypdl::{
     variable_type::{Numeric, OrderedContinuous},
 };
 use dypdl_heuristic_search::{
-    search_algorithm::{self, SearchInput},
+    search_algorithm::{util::TimeKeeper, SearchInput},
     Parameters,
 };
 use mpi::{environment::Universe, traits::*};
-use std::fs;
 use std::hash::Hash;
 use std::str::FromStr;
 use std::{
@@ -43,7 +42,7 @@ where
 
     let f_evaluator_type = additional_parameters.f_evaluator_type;
 
-    let (mut input, mut evaluators) = didp_mpi::make_input_and_dual_bound_evalautors(
+    let (mut input, mut evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evalautors(
         model,
         f_evaluator_type,
         parameters.primal_bound,
@@ -81,7 +80,7 @@ where
     let mut root_node = None;
     mem::swap(&mut input.node, &mut root_node);
     let root_process = communicator.process_at_rank(0);
-    let time_keeper = search_algorithm::util::TimeKeeper::default();
+    let time_keeper = TimeKeeper::default();
 
     if communicator.rank() == 0 {
         let initiation_result = didp_mpi::cbfs_initiator(
@@ -260,17 +259,10 @@ where
     T: Numeric,
     <T as FromStr>::Err: Debug,
 {
-    let config = fs::read_to_string(filename).unwrap_or_else(|e| {
-        panic!("Couldn't read a config file: {:?}", e);
-    });
-    let config = yaml_rust::YamlLoader::load_from_str(&config).unwrap_or_else(|e| {
-        panic!("Config file must be in YAML format: {:?}", e);
-    });
-    assert_eq!(config.len(), 1);
-    let yaml = &config[0];
+    let yaml = didp_mpi::read_config_yaml(filename);
     let map = yaml.as_hash().expect("Yaml file is not a hash");
     let parameters = didp_mpi::load_parameters_from_map::<T>(map);
-    let additional_common_parameters = AdditionalCommonParameters::load_from_map(map);
+    let additional_parameters = AdditionalCommonParameters::load_from_map(map);
     let key = Yaml::String(String::from("initiator"));
     let initiation_map = map.get(&key).expect("key 'initiator' is not found");
     let initiation_map = didp_yaml::util::get_map(initiation_map).expect("initiator is not a map");
@@ -282,14 +274,16 @@ where
 
     (
         parameters,
-        additional_common_parameters,
+        additional_parameters,
         initiation_parameters,
         aah_parameters,
     )
 }
 
 fn main() {
+    let time_keeper = TimeKeeper::default();
     let universe = mpi::initialize().unwrap();
+    let rank = universe.world().rank();
 
     let mut args = std::env::args();
     args.next();
@@ -301,5 +295,9 @@ fn main() {
         CostType::Continuous => {
             main_with_cost_type::<OrderedContinuous>(universe, model, &config_filename)
         }
+    }
+
+    if rank == 0 {
+        println!("Total time: {}s", time_keeper.elapsed_time());
     }
 }

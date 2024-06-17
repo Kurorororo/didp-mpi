@@ -3,13 +3,19 @@ use didp_yaml::{
     heuristic_search_solver::{CostToDump, SolutionToDump},
 };
 use dypdl::{prelude::*, variable_type::Numeric};
-use dypdl_heuristic_search::{FEvaluatorType, Parameters, Solution};
+use dypdl_heuristic_search::{
+    BeamSearchParameters, CabsParameters, FEvaluatorType, Parameters, ProgressiveSearchParameters,
+    Search, Solution,
+};
 use linked_hash_map::LinkedHashMap;
-use std::env::Args;
-use std::fmt::{Debug, Display};
 use std::fs;
 use std::process;
 use std::str::FromStr;
+use std::{env::Args, error::Error, fs::OpenOptions};
+use std::{
+    fmt::{Debug, Display},
+    io::Write,
+};
 use yaml_rust::{Yaml, YamlLoader};
 
 use crate::{aah::AahParameters, InitiationParameters, Statistics};
@@ -50,6 +56,53 @@ pub fn read_model(args: &mut Args) -> Model {
         eprintln!("Couldn't load a model: {:?}", e);
         process::exit(1);
     })
+}
+
+pub fn read_config_yaml(filename: &str) -> Yaml {
+    let config = fs::read_to_string(filename).unwrap_or_else(|e| {
+        panic!("Couldn't read a config file: {:?}", e);
+    });
+    let mut config = yaml_rust::YamlLoader::load_from_str(&config).unwrap_or_else(|e| {
+        panic!("Config file must be in YAML format: {:?}", e);
+    });
+    assert_eq!(config.len(), 1);
+    config.remove(0)
+}
+
+pub fn solve_and_dump_solutions<T, S>(
+    solver: &mut S,
+    history_filename: &str,
+    solution_filename: &str,
+) -> Result<Solution<T>, Box<dyn Error>>
+where
+    T: Numeric + Ord + Display + 'static,
+    <T as FromStr>::Err: Debug,
+    S: Search<T>,
+    CostToDump: From<T>,
+{
+    let mut file = OpenOptions::new()
+        .create(true)
+        .write(true)
+        .truncate(true)
+        .open(history_filename)?;
+
+    loop {
+        let (solution, terminated) = solver.search_next()?;
+
+        if let Some(cost) = solution.cost {
+            let line = format!(
+                "{}, {}, {}, {}\n",
+                solution.time, cost, solution.expanded, solution.generated
+            );
+            file.write_all(line.as_bytes())?;
+            let solution_to_dump = SolutionToDump::from(solution.clone());
+            solution_to_dump.dump_to_file(solution_filename)?;
+        }
+
+        if terminated {
+            return Ok(solution);
+        }
+    }
 }
 
 pub fn write_solution<T, V>(solution: &Solution<T, V>, filename: &str)
@@ -154,8 +207,30 @@ pub fn dump_statistics(statistics_list: &[Statistics]) {
     }
 }
 
-pub fn load_parameters_from_map<T: Numeric>(map: &LinkedHashMap<Yaml, Yaml>) -> Parameters<T>
+pub fn load_bool_from_map(map: &LinkedHashMap<Yaml, Yaml>, key: &str) -> Option<bool> {
+    map.get(&Yaml::from_str(key)).map(|t| {
+        t.as_bool()
+            .unwrap_or_else(|| panic!("{} must be boolean", key))
+    })
+}
+
+pub fn load_usize_from_map(map: &LinkedHashMap<Yaml, Yaml>, key: &str) -> Option<usize> {
+    map.get(&Yaml::from_str(key)).map(|t| {
+        t.as_i64()
+            .map_or_else(|| panic!("{} must be integer", key), |i| i as usize)
+    })
+}
+
+pub fn load_f64_from_map(map: &LinkedHashMap<Yaml, Yaml>, key: &str) -> Option<f64> {
+    map.get(&Yaml::from_str(key)).map(|t| {
+        t.as_f64()
+            .unwrap_or_else(|| panic!("{} must be float", key))
+    })
+}
+
+pub fn load_parameters_from_map<T>(map: &LinkedHashMap<Yaml, Yaml>) -> Parameters<T>
 where
+    T: Numeric,
     <T as FromStr>::Err: Debug,
 {
     let primal_bound = match map.get(&yaml_rust::Yaml::from_str("primal_bound")) {
@@ -169,30 +244,11 @@ where
     let time_limit = map
         .get(&yaml_rust::Yaml::from_str("time_limit"))
         .map(|value| didp_yaml::util::get_numeric(value).unwrap());
-    let quiet = match map.get(&yaml_rust::Yaml::from_str("quiet")) {
-        Some(Yaml::Boolean(value)) => *value,
-        None => false,
-        value => {
-            panic!("expected Boolean, but found `{:?}`", value)
-        }
-    };
-    let get_all_solutions = match map.get(&yaml_rust::Yaml::from_str("get_all_solutions")) {
-        Some(Yaml::Boolean(value)) => *value,
-        None => false,
-        value => {
-            panic!("expected Boolean, but found `{:?}`", value)
-        }
-    };
-    let initial_registry_capacity = match map.get(&Yaml::from_str("initial_registry_capacity")) {
-        Some(Yaml::Integer(value)) => Some(*value as usize),
-        None => Some(1000000),
-        value => {
-            panic!(
-                "expected Integer for `initial_registry_capacity`, but found `{:?}`",
-                value
-            )
-        }
-    };
+    let quiet = load_bool_from_map(map, "quiet").unwrap_or(false);
+    let get_all_solutions = load_bool_from_map(map, "get_all_solutions").unwrap_or(false);
+    let initial_registry_capacity =
+        load_usize_from_map(map, "initial_registry_capacity").or(Some(1000000));
+
     Parameters {
         primal_bound,
         time_limit,
@@ -201,6 +257,59 @@ where
         initial_registry_capacity,
     }
 }
+
+pub fn load_f_evaluator_type_from_map(map: &LinkedHashMap<Yaml, Yaml>) -> FEvaluatorType {
+    map.get(&Yaml::String("f_evaluator_type".into()))
+        .map(|t| {
+            let t = t.as_str().expect("f_evaluator_type must be string");
+            match t {
+                "+" => FEvaluatorType::Plus,
+                "*" => FEvaluatorType::Product,
+                "max" => FEvaluatorType::Max,
+                "min" => FEvaluatorType::Min,
+                _ => panic!("Invalid f_evaluator_type {:?}", t),
+            }
+        })
+        .unwrap_or(FEvaluatorType::Plus)
+}
+
+pub fn load_cabs_parameters_from_map<T>(map: &LinkedHashMap<Yaml, Yaml>) -> CabsParameters<T>
+where
+    T: Numeric,
+    <T as FromStr>::Err: Debug,
+{
+    let parameters = load_parameters_from_map::<T>(map);
+    let beam_size = load_usize_from_map(map, "initial_beam_size").unwrap_or(1);
+    let keep_all_layers = load_bool_from_map(map, "keep_all_layers").unwrap_or(false);
+    let max_beam_size = load_usize_from_map(map, "max_beam_size");
+    let beam_search_parameters = BeamSearchParameters {
+        parameters,
+        beam_size,
+        keep_all_layers,
+    };
+
+    CabsParameters {
+        max_beam_size,
+        beam_search_parameters,
+    }
+}
+
+pub fn load_progressive_parameters_from_map(
+    map: &LinkedHashMap<Yaml, Yaml>,
+) -> ProgressiveSearchParameters {
+    let init = load_usize_from_map(map, "init").unwrap_or(1);
+    let step = load_usize_from_map(map, "step").unwrap_or(1);
+    let bound = load_usize_from_map(map, "width_bound");
+    let reset = load_bool_from_map(map, "reset").unwrap_or(false);
+
+    ProgressiveSearchParameters {
+        init,
+        step,
+        bound,
+        reset,
+    }
+}
+
 pub enum HashType {
     Fx,
     MaskedFx,
@@ -220,23 +329,8 @@ pub struct AdditionalCommonParameters {
 
 impl AdditionalCommonParameters {
     pub fn load_from_map(map: &LinkedHashMap<Yaml, Yaml>) -> Self {
-        let f_evaluator_type = map
-            .get(&Yaml::String("f_evaluator_type".into()))
-            .map(|t| {
-                let t = t.as_str().expect("f_evaluator_type must be string");
-                match t {
-                    "+" => FEvaluatorType::Plus,
-                    "*" => FEvaluatorType::Product,
-                    "max" => FEvaluatorType::Max,
-                    "min" => FEvaluatorType::Min,
-                    _ => panic!("Invalid f_evaluator_type {:?}", t),
-                }
-            })
-            .unwrap_or(FEvaluatorType::Plus);
-
-        let buffer_size = map
-            .get(&Yaml::String("buffer_size".into()))
-            .map(|x| x.as_i64().expect("buffer_size must be an integer") as usize);
+        let f_evaluator_type = load_f_evaluator_type_from_map(map);
+        let buffer_size = load_usize_from_map(map, "buffer_size");
 
         let hash_type = map
             .get(&Yaml::String("hash_type".into()))
@@ -254,23 +348,10 @@ impl AdditionalCommonParameters {
             })
             .unwrap_or(HashType::Fx);
 
-        let abstraction_probability = map
-            .get(&Yaml::String("abstraction_probability".into()))
-            .map(|x| x.as_f64().expect("abstraction_probability must be a float"))
-            .or(map
-                .get(&Yaml::String("zobrist_zero_probability".into()))
-                .map(|x| {
-                    x.as_f64()
-                        .expect("zobrist_zero_probability must be a float")
-                }));
-
-        let count_bound_to_expanded = map
-            .get(&Yaml::String("count_bound_to_expanded".into()))
-            .map(|x| {
-                x.as_bool()
-                    .expect("count_bound_to_expanded must be a boolean")
-            })
-            .unwrap_or(false);
+        let abstraction_probability = load_f64_from_map(map, "abstraction_probability")
+            .or_else(|| load_f64_from_map(map, "zobrist_zero_probability"));
+        let count_bound_to_expanded =
+            load_bool_from_map(map, "count_bound_to_expanded").unwrap_or(false);
 
         Self {
             f_evaluator_type,
@@ -287,48 +368,23 @@ impl InitiationParameters {
         let time_limit = map
             .get(&yaml_rust::Yaml::from_str("time_limit"))
             .map(|value| didp_yaml::util::get_numeric(value).unwrap());
-        let quiet = match map.get(&yaml_rust::Yaml::from_str("quiet")) {
-            Some(Yaml::Boolean(value)) => *value,
-            None => false,
-            value => {
-                panic!("expected Boolean, but found `{:?}`", value)
-            }
-        };
-        let node_limit = match map.get(&Yaml::from_str("node_limit")) {
-            Some(Yaml::Integer(value)) => Some(*value as usize),
-            None => Some(1000000),
-            value => {
-                panic!("expected Integer for `node_limit`, but found `{:?}`", value)
-            }
-        };
+        let node_limit = load_usize_from_map(map, "node_limit");
+        let quiet = load_bool_from_map(map, "quiet").unwrap_or(false);
 
         Self {
             time_limit,
-            quiet,
             node_limit,
+            quiet,
         }
     }
 }
 
 impl AahParameters {
     pub fn load_from_map(map: &LinkedHashMap<Yaml, Yaml>) -> Self {
-        let max_probability = map
-            .get(&Yaml::String("max_probability".into()))
-            .map(|x| x.as_f64().expect("max_probability must be a float"))
-            .unwrap_or(1.0);
-        let step_size = map
-            .get(&Yaml::String("step_size".into()))
-            .map(|x| x.as_f64().expect("step_size must be a float"))
-            .unwrap_or(0.1);
-        let threshold_ratio_to_average = map
-            .get(&Yaml::String("threshold_ratio_to_average".into()))
-            .map(|x| {
-                x.as_f64()
-                    .expect("threshold_ratio_to_average must be a float")
-            });
-        let threshold_ratio_to_base = map
-            .get(&Yaml::String("threshold_ratio_to_base".into()))
-            .map(|x| x.as_f64().expect("threshold_ratio_to_base must be a float"));
+        let max_probability = load_f64_from_map(map, "max_probability").unwrap_or(1.0);
+        let step_size = load_f64_from_map(map, "step_size").unwrap_or(0.1);
+        let threshold_ratio_to_average = load_f64_from_map(map, "threshold_ratio_to_average");
+        let threshold_ratio_to_base = load_f64_from_map(map, "threshold_ratio_to_base");
 
         Self {
             max_probability,
