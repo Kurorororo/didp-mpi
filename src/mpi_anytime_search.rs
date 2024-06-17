@@ -25,6 +25,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 
 use crate::is_float::IsFloat;
+use crate::node_data_type::NodeDatatype;
 use crate::partial_solution;
 use crate::partial_solution::PartialSolutionTags;
 use crate::statistics::Statistics;
@@ -36,7 +37,6 @@ use crate::{
     distributed_id_chain::DistributedTransitionIdChain,
     key_value_statistics::KeyValueStatisticsTags,
 };
-use crate::{node_data_type::NodeDatatype, InitiationResult};
 
 #[derive(Copy, Clone, Debug, Default)]
 struct NTransitionIdsAndCostForSend<T>(usize, T);
@@ -350,15 +350,19 @@ where
         }
     }
 
-    pub fn initiate_solution(&mut self, solution: Solution<T, TransitionWithId<V>>) {
+    pub fn set_solution(&mut self, solution: Solution<T, TransitionWithId<V>>) {
         self.solution = solution;
         self.primal_bound = self.solution.cost;
         self.local_solution_cost = self.solution.cost;
         self.broadcast_primal_bound();
     }
 
-    pub fn initiate_statistics(&mut self, statistics: Statistics) {
+    pub fn set_statistics(&mut self, statistics: Statistics) {
         self.statistics = statistics;
+    }
+
+    pub fn reset_generated(&mut self) {
+        self.solution.generated = 0;
         self.statistics.generated = 0;
     }
 
@@ -1022,13 +1026,23 @@ where
         }
     }
 
-    pub fn initiate(&mut self, initiation_result: &InitiationResult<T, N, V>) {
-        self.id_to_chain_node
-            .clone_from(&initiation_result.id_to_chain_node);
-        self.solution_manager
-            .initiate_solution(initiation_result.solution.clone());
-        self.solution_manager
-            .initiate_statistics(initiation_result.statistics.clone());
+    pub fn set_solution(&mut self, solution: Solution<T, TransitionWithId<V>>) {
+        self.solution_manager.set_solution(solution)
+    }
+
+    pub fn set_statistics(&mut self, statistics: Statistics) {
+        self.solution_manager.set_statistics(statistics)
+    }
+
+    pub fn set_id_to_chain_node(
+        &mut self,
+        id_to_chain_node: Vec<Rc<DistributedTransitionIdChain>>,
+    ) {
+        self.id_to_chain_node = id_to_chain_node;
+    }
+
+    pub fn reset_generated(&mut self) {
+        self.solution_manager.reset_generated()
     }
 
     pub fn set_time_offset(&mut self, offset: f64) {

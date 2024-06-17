@@ -45,7 +45,7 @@ pub use hd_apps::HdApps;
 pub use hd_beam_search2::hd_beam_search2;
 pub use hd_best_first_search::HdBestFirstSearch;
 pub use hd_hac::HdHac;
-pub use initiation::{cbfs_initiator, InitiationParameters, InitiationResult};
+pub use initiation::{cbfs_initiator, hac_initiator, InitiationParameters, InitiationResult};
 pub use io::{
     dump_solution, dump_statistics, load_bool_from_map, load_cabs_parameters_from_map,
     load_f64_from_map, load_f_evaluator_type_from_map, load_parameters_from_map,

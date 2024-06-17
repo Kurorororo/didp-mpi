@@ -138,12 +138,24 @@ where
         self.search.set_time_offset(offset);
     }
 
+    pub fn initiate_without_distributing_nodes(
+        &mut self,
+        initiation_result: InitiationResult<T, N, V>,
+    ) {
+        self.search.set_statistics(initiation_result.statistics);
+        self.search.set_solution(initiation_result.solution);
+    }
+
     pub fn distriute_initial_nodes(
         &mut self,
         initiation_result: InitiationResult<T, N, V>,
         ranks: &[Rank],
     ) {
-        self.search.initiate(&initiation_result);
+        self.search
+            .set_id_to_chain_node(initiation_result.id_to_chain_node);
+        self.search.set_statistics(initiation_result.statistics);
+        self.search.set_solution(initiation_result.solution);
+        self.search.reset_generated();
 
         let mut rank_to_open_buffer = vec![Vec::default(); self.communicator.size() as usize];
         let mut rank_to_closed_buffer = vec![Vec::default(); self.communicator.size() as usize];

@@ -173,7 +173,7 @@ fn main_with_cost_type<T>(
         };
 
     let result =
-        didp_mpi::cbfs_initiator(input, successor_evaluator, base_cost_evaluator, parameters);
+        didp_mpi::hac_initiator(input, successor_evaluator, base_cost_evaluator, parameters);
 
     println!(
         "Generated {} nodes with {} seconds.",

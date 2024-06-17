@@ -33,8 +33,13 @@ where
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
 {
-    let (mut parameters, additional_parameters, initiation_parameters, aah_paramaters) =
-        load_config_from_file::<T>(config_filename);
+    let (
+        mut parameters,
+        additional_parameters,
+        initiation_parameters,
+        aah_paramaters,
+        ignore_initiation_nodes,
+    ) = load_config_from_file::<T>(config_filename);
 
     if let Some(buffer_size) = additional_parameters.buffer_size {
         universe.set_buffer_size(buffer_size);
@@ -78,12 +83,16 @@ where
     };
 
     let mut root_node = None;
-    mem::swap(&mut input.node, &mut root_node);
+
+    if !ignore_initiation_nodes {
+        mem::swap(&mut input.node, &mut root_node);
+    }
+
     let root_process = communicator.process_at_rank(0);
     let time_keeper = TimeKeeper::default();
 
     if communicator.rank() == 0 {
-        let initiation_result = didp_mpi::cbfs_initiator(
+        let initiation_result = didp_mpi::hac_initiator(
             initiator_input,
             &mut evaluators.local_successor_evaluator,
             &mut evaluators.base_cost_evaluator,
@@ -151,10 +160,14 @@ where
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
             solver.set_time_offset(offset);
 
-            solver.distriute_initial_nodes(initiation_result, &aah_result.assignments);
+            if ignore_initiation_nodes {
+                solver.initiate_without_distributing_nodes(initiation_result)
+            } else {
+                solver.distriute_initial_nodes(initiation_result, &aah_result.assignments);
 
-            if let Some(node) = root_node {
-                solver.close_root_node(node);
+                if let Some(node) = root_node {
+                    solver.close_root_node(node);
+                }
             }
 
             let (solution, statistics_list) = solver.search();
@@ -174,10 +187,14 @@ where
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
             solver.set_time_offset(offset);
 
-            solver.distriute_initial_nodes(initiation_result, &aah_result.assignments);
+            if ignore_initiation_nodes {
+                solver.initiate_without_distributing_nodes(initiation_result)
+            } else {
+                solver.distriute_initial_nodes(initiation_result, &aah_result.assignments);
 
-            if let Some(node) = root_node {
-                solver.close_root_node(node);
+                if let Some(node) = root_node {
+                    solver.close_root_node(node);
+                }
             }
 
             let (solution, statistics_list) = solver.search();
@@ -215,10 +232,13 @@ where
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
             solver.set_time_offset(offset);
-            solver.receive_initial_nodes(0);
 
-            if let Some(node) = root_node {
-                solver.close_root_node(node);
+            if !ignore_initiation_nodes {
+                solver.receive_initial_nodes(0);
+
+                if let Some(node) = root_node {
+                    solver.close_root_node(node);
+                }
             }
 
             solver.search();
@@ -232,10 +252,13 @@ where
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
             solver.set_time_offset(offset);
-            solver.receive_initial_nodes(0);
 
-            if let Some(node) = root_node {
-                solver.close_root_node(node);
+            if !ignore_initiation_nodes {
+                solver.receive_initial_nodes(0);
+
+                if let Some(node) = root_node {
+                    solver.close_root_node(node);
+                }
             }
 
             solver.search();
@@ -254,6 +277,7 @@ fn load_config_from_file<T>(
     AdditionalCommonParameters,
     InitiationParameters,
     AahParameters,
+    bool,
 )
 where
     T: Numeric,
@@ -271,12 +295,15 @@ where
     let aah_map = map.get(&key).expect("key 'aah' is not found");
     let aah_map = didp_yaml::util::get_map(aah_map).expect("aah is not a map");
     let aah_parameters = AahParameters::load_from_map(aah_map);
+    let ignore_initiation_nodes =
+        didp_mpi::load_bool_from_map(map, "ignore_initiation_nodes").unwrap_or(false);
 
     (
         parameters,
         additional_parameters,
         initiation_parameters,
         aah_parameters,
+        ignore_initiation_nodes,
     )
 }
 

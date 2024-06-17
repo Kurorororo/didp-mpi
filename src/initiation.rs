@@ -99,6 +99,344 @@ where
         .collect()
 }
 
+fn pop_from_open<T, N, V>(
+    open: &mut BinaryHeap<(Rc<N>, usize)>,
+    solution: &mut Solution<T, V>,
+    model: &Model,
+    primal_bound: Option<T>,
+    time_keeper: &TimeKeeper,
+    quiet: bool,
+) -> Option<(Rc<N>, usize)>
+where
+    T: Numeric + Display,
+    N: BfsNodeWithDistributedIdChain<T>,
+    V: TransitionInterface + Clone,
+{
+    while let Some((node, depth)) = open.pop() {
+        if node.is_closed() {
+            continue;
+        }
+
+        node.close();
+
+        if node.bound(model).map_or(false, |dual_bound| {
+            data_structure::exceed_bound(model, dual_bound, primal_bound)
+        }) {
+            if N::ordered_by_bound() {
+                open.clear();
+            }
+        } else {
+            if let Some(dual_bound) = node.bound(model) {
+                solution.time = time_keeper.elapsed_time();
+                util::update_bound_if_better(solution, dual_bound, model, quiet);
+            }
+
+            return Some((node, depth));
+        }
+    }
+
+    None
+}
+
+fn pop_from_layered_open<T, N>(
+    layered_open: &mut [BinaryHeap<Rc<N>>],
+    current_depth: usize,
+    model: &Model,
+    primal_bound: Option<T>,
+) -> Option<(Rc<N>, usize)>
+where
+    T: Numeric + Display,
+    N: BfsNodeWithDistributedIdChain<T>,
+{
+    while let Some(node) = layered_open[current_depth].pop() {
+        if node.is_closed() {
+            continue;
+        }
+
+        node.close();
+
+        if node.bound(model).map_or(false, |dual_bound| {
+            data_structure::exceed_bound(model, dual_bound, primal_bound)
+        }) {
+            if N::ordered_by_bound() {
+                layered_open[current_depth].clear();
+            }
+        } else {
+            return Some((node, current_depth));
+        }
+    }
+
+    None
+}
+
+pub fn hac_initiator<T, N, E, B, V>(
+    input: SearchInput<'_, N, TransitionWithId<V>>,
+    mut successor_evaluator: E,
+    mut base_cost_evaluator: B,
+    parameters: InitiationParameters,
+) -> InitiationResult<T, N, V>
+where
+    T: Numeric + Ord + Display,
+    <T as FromStr>::Err: Debug,
+    N: BfsNodeWithDistributedIdChain<T>,
+    E: FnMut(
+        StateInRegistry,
+        T,
+        &TransitionWithId<V>,
+        &DistributedTransitionIdChain,
+        &mut StateRegistry<T, N>,
+        Option<T>,
+    ) -> NodeGenerationResult<Rc<N>>,
+    B: FnMut(T, T) -> T,
+    V: TransitionInterface + Clone + Default,
+{
+    let time_keeper = parameters
+        .time_limit
+        .map_or_else(TimeKeeper::default, |time_limit| {
+            TimeKeeper::with_time_limit(time_limit)
+        });
+    let quiet = parameters.quiet;
+    let node_limit = parameters.node_limit;
+
+    let suffix = input.solution_suffix;
+    let generator = input.generator;
+    let model = &generator.model;
+
+    let forced_transitions = generator
+        .forced_transitions
+        .iter()
+        .map(|t| t.as_ref().clone())
+        .collect::<Vec<_>>();
+    let transitions = generator
+        .transitions
+        .iter()
+        .map(|t| t.as_ref().clone())
+        .collect::<Vec<_>>();
+
+    let mut open = BinaryHeap::with_capacity(1);
+    let mut layered_open = vec![BinaryHeap::default()];
+    let mut registry = StateRegistry::new(model.clone());
+    let mut id_to_chain_node = Vec::new();
+    let mut id_to_depth = Vec::new();
+
+    if let Some(node_limit) = node_limit {
+        registry.reserve(node_limit);
+        id_to_chain_node.reserve(node_limit);
+        id_to_depth.reserve(node_limit);
+    }
+
+    let mut solution = Solution::default();
+    let mut statistics = Statistics::default();
+    let mut registry_size = 0;
+
+    let node = input.node.and_then(|node| {
+        let result = search_algorithm::rollout(
+            node.state(),
+            node.cost(model),
+            suffix,
+            &mut base_cost_evaluator,
+            model,
+        );
+        result.and_then(|result| {
+            if result.is_base {
+                solution.cost = Some(result.cost);
+                solution.time = time_keeper.elapsed_time();
+                None
+            } else {
+                Some(node)
+            }
+        })
+    });
+
+    if let Some(node) = node {
+        let result = registry.insert(node);
+        let node = result.information.unwrap();
+        open.push((node, 0));
+        solution.generated += 1;
+        statistics.generated += 1;
+        registry_size += 1;
+
+        if !quiet {
+            solution.time = time_keeper.elapsed_time();
+            util::print_dual_bound(&solution);
+        }
+    } else {
+        solution.is_infeasible = true;
+    }
+
+    let mut current_depth = 0;
+    let mut is_layered_turn = false;
+
+    loop {
+        if time_keeper.check_time_limit(quiet) {
+            break;
+        }
+
+        if let Some(node_limit) = node_limit {
+            if registry_size >= node_limit {
+                break;
+            }
+        }
+
+        let mut popped = None;
+
+        if is_layered_turn {
+            if current_depth > layered_open.len() - 1 {
+                current_depth = 0;
+            }
+
+            let initial_depth = current_depth;
+
+            loop {
+                let result =
+                    pop_from_layered_open(&mut layered_open, current_depth, model, solution.cost);
+                current_depth += 1;
+
+                if result.is_some() {
+                    is_layered_turn = false;
+                    popped = result;
+
+                    break;
+                } else {
+                    if current_depth > layered_open.len() - 1 {
+                        current_depth = 0;
+                    }
+
+                    if current_depth == initial_depth {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if popped.is_none() {
+            is_layered_turn = true;
+            let primal_bound = solution.cost;
+            popped = pop_from_open(
+                &mut open,
+                &mut solution,
+                model,
+                primal_bound,
+                &time_keeper,
+                quiet,
+            );
+        }
+
+        if let Some((node, depth)) = popped {
+            solution.expanded += 1;
+            statistics.expanded += 1;
+
+            node.get_distributed_transition_id_chain()
+                .id
+                .set(Some(id_to_chain_node.len()));
+            id_to_chain_node.push(node.get_rc_distributed_transition_id_chain().clone());
+            id_to_depth.push(depth);
+
+            let mut no_successor = false;
+
+            for transition in generator.applicable_transitions(node.state()) {
+                if let Some((successor_state, g)) = model.generate_successor_state(
+                    node.state(),
+                    node.cost(model),
+                    transition.as_ref(),
+                    None,
+                ) {
+                    let result = search_algorithm::rollout(
+                        &successor_state,
+                        g,
+                        suffix,
+                        &mut base_cost_evaluator,
+                        model,
+                    );
+
+                    if let Some(result) = result {
+                        if result.is_base {
+                            if !data_structure::exceed_bound(model, result.cost, solution.cost) {
+                                construct_solution(
+                                    transition.as_ref(),
+                                    node.get_distributed_transition_id_chain(),
+                                    &transitions,
+                                    &forced_transitions,
+                                    &id_to_chain_node,
+                                    &mut solution.transitions,
+                                );
+                                solution.cost = Some(result.cost);
+                                solution.time = time_keeper.elapsed_time();
+
+                                if !quiet {
+                                    util::print_primal_bound(&solution);
+                                }
+                            }
+
+                            continue;
+                        }
+                    }
+
+                    let result = successor_evaluator(
+                        successor_state,
+                        g,
+                        &transition,
+                        node.get_distributed_transition_id_chain(),
+                        &mut registry,
+                        solution.cost,
+                    );
+                    statistics.dominated_before_closed += result.dominated_before_closed;
+                    statistics.dominated_after_closed += result.dominated_after_closed;
+
+                    if let Some(successor) = result.node {
+                        if result.dominated_before_closed == 0 && result.dominated_after_closed == 0
+                        {
+                            solution.generated += 1;
+                            statistics.generated += 1;
+                            registry_size += 1;
+                        } else {
+                            registry_size = registry_size + 1
+                                - result.dominated_before_closed
+                                - result.dominated_after_closed;
+                        }
+
+                        if no_successor {
+                            no_successor = false;
+                        }
+
+                        while current_depth + 1 >= layered_open.len() {
+                            layered_open.push(BinaryHeap::new());
+                        }
+
+                        open.push((successor.clone(), depth + 1));
+                        layered_open[depth + 1].push(successor);
+                    }
+                }
+            }
+
+            if no_successor {
+                node.get_distributed_transition_id_chain().id.set(None);
+                id_to_chain_node.pop();
+                id_to_depth.pop();
+            }
+        } else {
+            break;
+        }
+    }
+
+    if open.is_empty() {
+        solution.is_optimal = solution.cost.is_some();
+        solution.is_infeasible = solution.cost.is_none();
+        solution.best_bound = solution.cost;
+    }
+
+    solution.time = time_keeper.elapsed_time();
+
+    InitiationResult {
+        n_nodes: registry_size,
+        nodes: extract_nodes(&mut registry, solution.cost),
+        id_to_chain_node,
+        id_to_depth,
+        solution,
+        statistics,
+    }
+}
+
 pub fn cbfs_initiator<T, N, E, B, V>(
     input: SearchInput<'_, N, TransitionWithId<V>>,
     mut successor_evaluator: E,
