@@ -118,6 +118,34 @@ where
     let f_evaluator_type = additional_parameters.f_evaluator_type;
 
     match additional_parameters.hash_type {
+        HashType::Wy => {
+            let hash_function = didp_mpi::create_wyhash();
+            main_with_cost_type_and_hash_function(
+                universe,
+                model,
+                parameters,
+                progressive_search_parameters,
+                f_evaluator_type,
+                hash_function,
+                additional_parameters.count_bound_to_expanded,
+            );
+        }
+        HashType::MaskedWy => {
+            let masks = didp_mpi::create_set_masks(
+                &model,
+                additional_parameters.abstraction_probability.unwrap_or(0.0),
+            );
+            let hash_function = didp_mpi::create_masked_wyhash(masks);
+            main_with_cost_type_and_hash_function(
+                universe,
+                model,
+                parameters,
+                progressive_search_parameters,
+                f_evaluator_type,
+                hash_function,
+                additional_parameters.count_bound_to_expanded,
+            );
+        }
         HashType::Fx => {
             let hash_function = didp_mpi::create_fx_hash();
             main_with_cost_type_and_hash_function(

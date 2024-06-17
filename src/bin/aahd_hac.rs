@@ -145,7 +145,7 @@ where
         }
 
         let (solution, statistics_list) = if let Some(masks) = aah_result.masks {
-            let hash_function = didp_mpi::create_masked_fx_hash(masks);
+            let hash_function = didp_mpi::create_masked_wyhash(masks);
             let offset = time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
@@ -168,7 +168,7 @@ where
 
             (solution, statistics_list)
         } else {
-            let hash_function = didp_mpi::create_fx_hash();
+            let hash_function = didp_mpi::create_wyhash();
             let offset = time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
@@ -210,7 +210,7 @@ where
             let mut p = 0.0;
             root_process.broadcast_into(&mut p);
             let masks = didp_mpi::create_set_masks(&input.generator.model, p);
-            let hash_function = didp_mpi::create_masked_fx_hash(masks);
+            let hash_function = didp_mpi::create_masked_wyhash(masks);
             let offset = time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
@@ -227,7 +227,7 @@ where
                 solver.gather_bound_to_expanded();
             }
         } else {
-            let hash_function = didp_mpi::create_fx_hash();
+            let hash_function = didp_mpi::create_wyhash();
             let offset = time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);

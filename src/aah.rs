@@ -109,7 +109,7 @@ where
     let mut distribution = AssignemntDistribution::default();
     distribution.rank_to_size.reserve(n_ranks as usize);
 
-    let mut hash_function = hash_functions::create_fx_hash();
+    let mut hash_function = hash_functions::create_wyhash();
     compute_hash_values(&mut hash_function, &result.nodes, &mut hash_values);
     make_assignment(&hash_values, n_ranks, &mut no_abstraction_assignments);
     compute_assignemnt_distribution(
@@ -136,7 +136,7 @@ where
 
     while p > 0.0 {
         let masks = hash_functions::create_set_masks(model, p);
-        let mut hash_function = hash_functions::create_masked_fx_hash(masks.clone());
+        let mut hash_function = hash_functions::create_masked_wyhash(masks.clone());
         compute_hash_values(&mut hash_function, &result.nodes, &mut hash_values);
         make_assignment(&hash_values, n_ranks, &mut assignments);
         compute_assignemnt_distribution(n_ranks, &assignments, &result.nodes, &mut distribution);

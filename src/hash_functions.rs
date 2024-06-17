@@ -4,6 +4,7 @@ use rand::prelude::*;
 use rand_pcg::Pcg64Mcg;
 use rustc_hash::FxHasher;
 use std::hash::{Hash, Hasher};
+use wyhash::WyHash;
 
 use crate::state_serializer::StateSerializer;
 
@@ -13,6 +14,16 @@ pub fn create_fx_hash() -> impl Fn(&HashableSignatureVariables) -> u64 {
     |signature: &HashableSignatureVariables| -> u64 {
         let mut hasher = FxHasher::default();
         hasher.write_u32(SEED);
+        signature.hash(&mut hasher);
+        hasher.finish()
+    }
+}
+
+pub fn create_wyhash() -> impl Fn(&HashableSignatureVariables) -> u64 {
+    const SEED: u64 = 0x5583c24d;
+
+    |signature: &HashableSignatureVariables| -> u64 {
+        let mut hasher = WyHash::with_seed(SEED);
         signature.hash(&mut hasher);
         hasher.finish()
     }
@@ -57,6 +68,22 @@ pub fn create_masked_fx_hash(masks: Vec<Vec<u32>>) -> impl Fn(&HashableSignature
     move |signature: &HashableSignatureVariables| -> u64 {
         let mut hasher = FxHasher::default();
         hasher.write_u32(SEED);
+
+        for (v, row) in signature.set_variables.iter().zip(masks.iter()) {
+            for (bits, mask) in v.as_slice().iter().zip(row.iter()) {
+                hasher.write_u32(bits & mask);
+            }
+        }
+
+        hasher.finish()
+    }
+}
+
+pub fn create_masked_wyhash(masks: Vec<Vec<u32>>) -> impl Fn(&HashableSignatureVariables) -> u64 {
+    const SEED: u64 = 0x5583c24d;
+
+    move |signature: &HashableSignatureVariables| -> u64 {
+        let mut hasher = WyHash::with_seed(SEED);
 
         for (v, row) in signature.set_variables.iter().zip(masks.iter()) {
             for (bits, mask) in v.as_slice().iter().zip(row.iter()) {

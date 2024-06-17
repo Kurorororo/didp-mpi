@@ -311,6 +311,8 @@ pub fn load_progressive_parameters_from_map(
 }
 
 pub enum HashType {
+    Wy,
+    MaskedWy,
     Fx,
     MaskedFx,
     SetZobrist,
@@ -337,6 +339,8 @@ impl AdditionalCommonParameters {
             .map(|t| {
                 let t = t.as_str().expect("hash_type must be string");
                 match t {
+                    "wy" => HashType::Wy,
+                    "masked_wy" => HashType::MaskedWy,
                     "fx" => HashType::Fx,
                     "masked_fx" => HashType::MaskedFx,
                     "set_zobrist" => HashType::SetZobrist,
@@ -346,7 +350,7 @@ impl AdditionalCommonParameters {
                     _ => panic!("Invalid hash_type {:?}", t),
                 }
             })
-            .unwrap_or(HashType::Fx);
+            .unwrap_or(HashType::Wy);
 
         let abstraction_probability = load_f64_from_map(map, "abstraction_probability")
             .or_else(|| load_f64_from_map(map, "zobrist_zero_probability"));
