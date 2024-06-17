@@ -134,7 +134,7 @@ where
     let mut assignments = Vec::with_capacity(no_abstraction_assignments.len());
     let mut p = parameters.max_probability;
 
-    while p >= 0.0 {
+    while p > 0.0 {
         let masks = hash_functions::create_set_masks(model, p);
         let mut hash_function = hash_functions::create_masked_fx_hash(masks.clone());
         compute_hash_values(&mut hash_function, &result.nodes, &mut hash_values);
