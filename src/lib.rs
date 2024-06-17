@@ -34,8 +34,10 @@ pub use distributed_f_node_message::DistributedFNodeMessage;
 pub use distributed_id_chain::DistributedTransitionIdChain;
 pub use hac::Hac;
 pub use hash_functions::{
-    create_3bits_field_zobrist_hash, create_4bits_field_zobrist_hash, create_fx_hash,
-    create_masked_fx_hash, create_masked_wyhash, create_set_masks, create_set_zobrist_hash,
+    create_3bits_field_zobrist_hash, create_4bits_field_zobrist_hash,
+    create_abstract_bytewise_random_table, create_bytewise_zobrist_hash,
+    create_bytewise_zobrist_hash_with_others, create_fx_hash, create_masked_fx_hash,
+    create_masked_wyhash, create_set_masks, create_set_zobrist_hash,
     create_set_zobrist_hash_with_others, create_wyhash,
 };
 pub use hd_acps::HdAcps;

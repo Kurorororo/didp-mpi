@@ -350,7 +350,7 @@ impl AdditionalCommonParameters {
                     _ => panic!("Invalid hash_type {:?}", t),
                 }
             })
-            .unwrap_or(HashType::Wy);
+            .unwrap_or(HashType::Fx);
 
         let abstraction_probability = load_f64_from_map(map, "abstraction_probability")
             .or_else(|| load_f64_from_map(map, "zobrist_zero_probability"));

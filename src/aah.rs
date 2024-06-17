@@ -85,7 +85,7 @@ pub struct AahParameters {
 }
 
 pub struct AahResult {
-    pub masks: Option<Vec<Vec<u32>>>,
+    pub table: Option<Vec<Vec<[[u64; 256]; 4]>>>,
     pub probability: Option<f64>,
     pub assignments: Vec<Rank>,
     pub stddev: f64,
@@ -109,7 +109,7 @@ where
     let mut distribution = AssignemntDistribution::default();
     distribution.rank_to_size.reserve(n_ranks as usize);
 
-    let mut hash_function = hash_functions::create_wyhash();
+    let mut hash_function = hash_functions::create_fx_hash();
     compute_hash_values(&mut hash_function, &result.nodes, &mut hash_values);
     make_assignment(&hash_values, n_ranks, &mut no_abstraction_assignments);
     compute_assignemnt_distribution(
@@ -123,7 +123,7 @@ where
     if let Some(threshold) = parameters.threshold_ratio_to_average {
         if no_abstraction_stddev / average_size > threshold {
             return AahResult {
-                masks: None,
+                table: None,
                 probability: None,
                 assignments: no_abstraction_assignments,
                 stddev: no_abstraction_stddev,
@@ -135,8 +135,8 @@ where
     let mut p = parameters.max_probability;
 
     while p > 0.0 {
-        let masks = hash_functions::create_set_masks(model, p);
-        let mut hash_function = hash_functions::create_masked_wyhash(masks.clone());
+        let table = hash_functions::create_abstract_bytewise_random_table(model, p);
+        let mut hash_function = hash_functions::create_bytewise_zobrist_hash(table.clone());
         compute_hash_values(&mut hash_function, &result.nodes, &mut hash_values);
         make_assignment(&hash_values, n_ranks, &mut assignments);
         compute_assignemnt_distribution(n_ranks, &assignments, &result.nodes, &mut distribution);
@@ -158,7 +158,7 @@ where
 
         if is_good {
             return AahResult {
-                masks: Some(masks),
+                table: Some(table),
                 probability: Some(p),
                 assignments,
                 stddev,
@@ -169,7 +169,7 @@ where
     }
 
     AahResult {
-        masks: None,
+        table: None,
         probability: None,
         assignments: no_abstraction_assignments,
         stddev: no_abstraction_stddev,

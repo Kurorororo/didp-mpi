@@ -163,10 +163,11 @@ where
             );
         }
         HashType::SetZobrist => {
-            let hash_function = didp_mpi::create_set_zobrist_hash(
+            let table = didp_mpi::create_abstract_bytewise_random_table(
                 &model,
-                additional_parameters.abstraction_probability,
+                additional_parameters.abstraction_probability.unwrap_or(0.0),
             );
+            let hash_function = didp_mpi::create_bytewise_zobrist_hash(table);
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
@@ -177,10 +178,11 @@ where
             );
         }
         HashType::SetZobristWithOthers => {
-            let hash_function = didp_mpi::create_set_zobrist_hash_with_others(
+            let table = didp_mpi::create_abstract_bytewise_random_table(
                 &model,
-                additional_parameters.abstraction_probability,
+                additional_parameters.abstraction_probability.unwrap_or(0.0),
             );
+            let hash_function = didp_mpi::create_bytewise_zobrist_hash_with_others(table);
             main_with_cost_type_and_hash_function(
                 universe,
                 model,

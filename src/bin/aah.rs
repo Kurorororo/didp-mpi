@@ -195,7 +195,7 @@ fn main_with_cost_type<T>(
         let mut distribution = AssignemntDistribution::default();
         distribution.rank_to_size.reserve(n_ranks as usize);
 
-        let mut hash_function = didp_mpi::create_wyhash();
+        let mut hash_function = didp_mpi::create_fx_hash();
         didp_mpi::compute_hash_values(&mut hash_function, &result.nodes, &mut hash_values);
         didp_mpi::make_assignment(&hash_values, n_ranks, &mut assignments);
         didp_mpi::compute_assignemnt_distribution(
@@ -209,8 +209,8 @@ fn main_with_cost_type<T>(
         println!("No abstraction, stddev = {}", no_abstraction_stddev);
 
         for p in [0.3, 0.2, 0.1] {
-            let masks = didp_mpi::create_set_masks(&model, p);
-            let mut hash_function = didp_mpi::create_masked_wyhash(masks);
+            let table = didp_mpi::create_abstract_bytewise_random_table(&model, p);
+            let mut hash_function = didp_mpi::create_bytewise_zobrist_hash(table);
             didp_mpi::compute_hash_values(&mut hash_function, &result.nodes, &mut hash_values);
             didp_mpi::make_assignment(&hash_values, n_ranks, &mut assignments);
             didp_mpi::compute_assignemnt_distribution(
