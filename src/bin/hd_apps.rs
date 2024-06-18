@@ -23,20 +23,30 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
+struct AppsParameters<T> {
+    parameters: Parameters<T>,
+    progressive_parameters: ProgressiveSearchParameters,
+    f_evaluator_type: FEvaluatorType,
+    count_bound_to_expanded: bool,
+}
+
 fn main_with_cost_type_and_hash_function<T, H>(
     universe: Universe,
     model: Model,
-    mut parameters: Parameters<T>,
-    progressive_parameters: ProgressiveSearchParameters,
-    f_evaluator_type: FEvaluatorType,
     hash_function: H,
-    count_bound_to_expanded: bool,
+    apps_parameters: AppsParameters<T>,
+    time_keeper: &TimeKeeper,
 ) where
     T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     H: Fn(&HashableSignatureVariables) -> u64,
 {
+    let mut parameters = apps_parameters.parameters;
+    let progressive_parameters = apps_parameters.progressive_parameters;
+    let f_evaluator_type = apps_parameters.f_evaluator_type;
+    let count_bound_to_expanded = apps_parameters.count_bound_to_expanded;
+
     let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evalautors(
         model,
         f_evaluator_type,
@@ -86,6 +96,12 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     if communicator.rank() == 0 {
         didp_mpi::dump_solution(&solution);
+
+        println!(
+            "Time to the final solution: {}s",
+            time_keeper.elapsed_time()
+        );
+
         didp_mpi::dump_statistics(&statistics_list);
         Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
     }
@@ -99,8 +115,12 @@ fn main_with_cost_type_and_hash_function<T, H>(
     }
 }
 
-fn main_with_cost_type<T>(mut universe: Universe, model: Model, config_filename: &str)
-where
+fn main_with_cost_type<T>(
+    mut universe: Universe,
+    model: Model,
+    config_filename: &str,
+    time_keeper: &TimeKeeper,
+) where
     T: Numeric + IsFloat + Ord + Display + Hash,
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
@@ -109,7 +129,7 @@ where
     let map = yaml.as_hash().expect("Yaml file is not a hash");
     let parameters = didp_mpi::load_parameters_from_map::<T>(map);
     let additional_parameters = AdditionalCommonParameters::load_from_map(map);
-    let progressive_search_parameters = didp_mpi::load_progressive_parameters_from_map(map);
+    let progressive_parameters = didp_mpi::load_progressive_parameters_from_map(map);
 
     if let Some(buffer_size) = additional_parameters.buffer_size {
         universe.set_buffer_size(buffer_size);
@@ -117,17 +137,22 @@ where
 
     let f_evaluator_type = additional_parameters.f_evaluator_type;
 
+    let apps_parameters = AppsParameters {
+        parameters,
+        progressive_parameters,
+        f_evaluator_type,
+        count_bound_to_expanded: additional_parameters.count_bound_to_expanded,
+    };
+
     match additional_parameters.hash_type {
         HashType::Wy => {
             let hash_function = didp_mpi::create_wyhash();
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
-                parameters,
-                progressive_search_parameters,
-                f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
+                apps_parameters,
+                time_keeper,
             );
         }
         HashType::MaskedWy => {
@@ -139,11 +164,9 @@ where
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
-                parameters,
-                progressive_search_parameters,
-                f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
+                apps_parameters,
+                time_keeper,
             );
         }
         HashType::Fx => {
@@ -151,11 +174,9 @@ where
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
-                parameters,
-                progressive_search_parameters,
-                f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
+                apps_parameters,
+                time_keeper,
             );
         }
         HashType::MaskedFx => {
@@ -167,11 +188,9 @@ where
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
-                parameters,
-                progressive_search_parameters,
-                f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
+                apps_parameters,
+                time_keeper,
             );
         }
         HashType::SetZobrist => {
@@ -183,11 +202,9 @@ where
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
-                parameters,
-                progressive_search_parameters,
-                f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
+                apps_parameters,
+                time_keeper,
             );
         }
         HashType::SetZobristWithOthers => {
@@ -199,11 +216,9 @@ where
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
-                parameters,
-                progressive_search_parameters,
-                f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
+                apps_parameters,
+                time_keeper,
             );
         }
         HashType::ThreeBitsFieldZobrist => {
@@ -214,11 +229,9 @@ where
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
-                parameters,
-                progressive_search_parameters,
-                f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
+                apps_parameters,
+                time_keeper,
             );
         }
         HashType::FourBitsFieldZobrist => {
@@ -229,11 +242,9 @@ where
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
-                parameters,
-                progressive_search_parameters,
-                f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
+                apps_parameters,
+                time_keeper,
             );
         }
     }
@@ -244,16 +255,25 @@ fn main() {
     let universe = mpi::initialize().unwrap();
     let rank = universe.world().rank();
 
+    if rank == 0 {
+        println!("Time to initialize MPI: {}s", time_keeper.elapsed_time());
+    }
+
     let mut args = std::env::args();
     args.next();
     let model = didp_mpi::read_model(&mut args);
     let config_filename = args.next().expect("Config filename is not specified");
 
     match model.cost_type {
-        CostType::Integer => main_with_cost_type::<Integer>(universe, model, &config_filename),
-        CostType::Continuous => {
-            main_with_cost_type::<OrderedContinuous>(universe, model, &config_filename)
+        CostType::Integer => {
+            main_with_cost_type::<Integer>(universe, model, &config_filename, &time_keeper)
         }
+        CostType::Continuous => main_with_cost_type::<OrderedContinuous>(
+            universe,
+            model,
+            &config_filename,
+            &time_keeper,
+        ),
     }
 
     if rank == 0 {

@@ -34,6 +34,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     mut parameters: CabsParameters<T>,
     f_evaluator_type: FEvaluatorType,
     hash_function: H,
+    time_keeper: &TimeKeeper,
 ) where
     T: Numeric + IsFloat + Ord + Display,
     <T as FromStr>::Err: Debug,
@@ -146,13 +147,23 @@ fn main_with_cost_type_and_hash_function<T, H>(
         solution.expanded = statistics_list.iter().map(|s| s.expanded).sum();
         solution.generated = statistics_list.iter().map(|s| s.generated).sum();
         didp_mpi::dump_solution(&solution);
+
+        println!(
+            "Time to the final solution: {}s",
+            time_keeper.elapsed_time()
+        );
+
         didp_mpi::dump_statistics(&statistics_list);
         Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
     }
 }
 
-fn main_with_cost_type<T>(mut universe: Universe, model: Model, config_filename: &str)
-where
+fn main_with_cost_type<T>(
+    mut universe: Universe,
+    model: Model,
+    config_filename: &str,
+    time_keeper: &TimeKeeper,
+) where
     T: Numeric + IsFloat + Ord + Display,
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
@@ -177,6 +188,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                time_keeper,
             );
         }
         HashType::MaskedWy => {
@@ -191,6 +203,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                time_keeper,
             );
         }
         HashType::Fx => {
@@ -201,6 +214,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                time_keeper,
             );
         }
         HashType::MaskedFx => {
@@ -215,6 +229,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                time_keeper,
             );
         }
         HashType::SetZobrist => {
@@ -229,6 +244,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                time_keeper,
             );
         }
         HashType::SetZobristWithOthers => {
@@ -243,6 +259,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                time_keeper,
             );
         }
         HashType::ThreeBitsFieldZobrist => {
@@ -256,6 +273,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                time_keeper,
             );
         }
         HashType::FourBitsFieldZobrist => {
@@ -269,6 +287,7 @@ where
                 parameters,
                 f_evaluator_type,
                 hash_function,
+                time_keeper,
             );
         }
     }
@@ -279,16 +298,25 @@ fn main() {
     let universe = mpi::initialize().unwrap();
     let rank = universe.world().rank();
 
+    if rank == 0 {
+        println!("Time to initialize MPI: {}s", time_keeper.elapsed_time());
+    }
+
     let mut args = std::env::args();
     args.next();
     let model = didp_mpi::read_model(&mut args);
     let config_filename = args.next().expect("Config filename is not specified");
 
     match model.cost_type {
-        CostType::Integer => main_with_cost_type::<Integer>(universe, model, &config_filename),
-        CostType::Continuous => {
-            main_with_cost_type::<OrderedContinuous>(universe, model, &config_filename)
+        CostType::Integer => {
+            main_with_cost_type::<Integer>(universe, model, &config_filename, &time_keeper)
         }
+        CostType::Continuous => main_with_cost_type::<OrderedContinuous>(
+            universe,
+            model,
+            &config_filename,
+            &time_keeper,
+        ),
     }
 
     if rank == 0 {

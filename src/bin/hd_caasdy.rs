@@ -30,6 +30,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     f_evaluator_type: FEvaluatorType,
     hash_function: H,
     count_bound_to_expanded: bool,
+    time_keeper: &TimeKeeper,
 ) where
     T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
@@ -79,6 +80,12 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     if communicator.rank() == 0 {
         didp_mpi::dump_solution(&solution);
+
+        println!(
+            "Time to the final solution: {}s",
+            time_keeper.elapsed_time()
+        );
+
         didp_mpi::dump_statistics(&statistics_list);
         Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
     }
@@ -92,8 +99,12 @@ fn main_with_cost_type_and_hash_function<T, H>(
     }
 }
 
-fn main_with_cost_type<T>(mut universe: Universe, model: Model, config_filename: &str)
-where
+fn main_with_cost_type<T>(
+    mut universe: Universe,
+    model: Model,
+    config_filename: &str,
+    time_keeper: &TimeKeeper,
+) where
     T: Numeric + IsFloat + Ord + Display + Hash,
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
@@ -119,6 +130,7 @@ where
                 f_evaluator_type,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
+                time_keeper,
             );
         }
         HashType::MaskedWy => {
@@ -134,6 +146,7 @@ where
                 f_evaluator_type,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
+                time_keeper,
             );
         }
         HashType::Fx => {
@@ -145,6 +158,7 @@ where
                 f_evaluator_type,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
+                time_keeper,
             );
         }
         HashType::MaskedFx => {
@@ -160,6 +174,7 @@ where
                 f_evaluator_type,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
+                time_keeper,
             );
         }
         HashType::SetZobrist => {
@@ -175,6 +190,7 @@ where
                 f_evaluator_type,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
+                time_keeper,
             );
         }
         HashType::SetZobristWithOthers => {
@@ -190,6 +206,7 @@ where
                 f_evaluator_type,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
+                time_keeper,
             );
         }
         HashType::ThreeBitsFieldZobrist => {
@@ -204,6 +221,7 @@ where
                 f_evaluator_type,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
+                time_keeper,
             );
         }
         HashType::FourBitsFieldZobrist => {
@@ -218,15 +236,20 @@ where
                 f_evaluator_type,
                 hash_function,
                 additional_parameters.count_bound_to_expanded,
+                time_keeper,
             );
         }
     }
 }
 
 fn main() {
-    let time_keepr = TimeKeeper::default();
+    let time_keeper = TimeKeeper::default();
     let universe = mpi::initialize().unwrap();
     let rank = universe.world().rank();
+
+    if rank == 0 {
+        println!("Time to initialize MPI: {}s", time_keeper.elapsed_time());
+    }
 
     let mut args = std::env::args();
     args.next();
@@ -234,13 +257,18 @@ fn main() {
     let config_filename = args.next().expect("Config filename is not specified");
 
     match model.cost_type {
-        CostType::Integer => main_with_cost_type::<Integer>(universe, model, &config_filename),
-        CostType::Continuous => {
-            main_with_cost_type::<OrderedContinuous>(universe, model, &config_filename)
+        CostType::Integer => {
+            main_with_cost_type::<Integer>(universe, model, &config_filename, &time_keeper)
         }
+        CostType::Continuous => main_with_cost_type::<OrderedContinuous>(
+            universe,
+            model,
+            &config_filename,
+            &time_keeper,
+        ),
     }
 
     if rank == 0 {
-        println!("Total time: {}s", time_keepr.elapsed_time());
+        println!("Total time: {}s", time_keeper.elapsed_time());
     }
 }

@@ -14,7 +14,7 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-fn main_with_cost_type<T>(model: Model, config_filename: &str)
+fn main_with_cost_type<T>(model: Model, config_filename: &str, time_keeper: &TimeKeeper)
 where
     T: Numeric + Ord + Display + 'static,
     CostToDump: From<T>,
@@ -45,6 +45,11 @@ where
         didp_mpi::solve_and_dump_solutions(&mut solver, "history.csv", "solution.yaml").unwrap();
 
     didp_mpi::dump_solution(&solution);
+
+    println!(
+        "Time to the final solution: {}s",
+        time_keeper.elapsed_time()
+    );
 }
 
 fn main() {
@@ -56,8 +61,10 @@ fn main() {
     let config_filename = args.next().expect("Config filename is not specified");
 
     match model.cost_type {
-        CostType::Integer => main_with_cost_type::<Integer>(model, &config_filename),
-        CostType::Continuous => main_with_cost_type::<OrderedContinuous>(model, &config_filename),
+        CostType::Integer => main_with_cost_type::<Integer>(model, &config_filename, &time_keeper),
+        CostType::Continuous => {
+            main_with_cost_type::<OrderedContinuous>(model, &config_filename, &time_keeper)
+        }
     }
 
     println!("Total time: {}s", time_keeper.elapsed_time());

@@ -27,8 +27,12 @@ use tikv_jemallocator::Jemalloc;
 #[global_allocator]
 static GLOBAL: Jemalloc = Jemalloc;
 
-fn main_with_cost_type<T>(mut universe: Universe, model: Model, config_filename: &str)
-where
+fn main_with_cost_type<T>(
+    mut universe: Universe,
+    model: Model,
+    config_filename: &str,
+    time_keeper: &TimeKeeper,
+) where
     T: Numeric + IsFloat + Ord + Display + Hash,
     CostToDump: From<T>,
     <T as FromStr>::Err: Debug,
@@ -89,7 +93,7 @@ where
     }
 
     let root_process = communicator.process_at_rank(0);
-    let time_keeper = TimeKeeper::default();
+    let search_time_keeper = TimeKeeper::default();
 
     if communicator.rank() == 0 {
         let initiation_result = didp_mpi::hac_initiator(
@@ -130,7 +134,7 @@ where
         }
 
         if let Some(time_limit) = parameters.parameters.time_limit {
-            parameters.parameters.time_limit = Some(time_limit - time_keeper.elapsed_time());
+            parameters.parameters.time_limit = Some(time_limit - search_time_keeper.elapsed_time());
         }
 
         let aah_result = didp_mpi::aah(
@@ -153,9 +157,9 @@ where
             root_process.broadcast_into(&mut p_flag);
         }
 
-        let (solution, statistics_list) = if let Some(table) = aah_result.table {
+        if let Some(table) = aah_result.table {
             let hash_function = didp_mpi::create_bytewise_zobrist_hash(table);
-            let offset = time_keeper.elapsed_time();
+            let offset = search_time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
             solver.set_time_offset(offset);
@@ -179,10 +183,18 @@ where
                     .unwrap();
             }
 
-            (solution, statistics_list)
+            didp_mpi::dump_solution(&solution);
+
+            println!(
+                "Time to the final solution: {}s",
+                time_keeper.elapsed_time()
+            );
+
+            didp_mpi::dump_statistics(&statistics_list);
+            Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
         } else {
             let hash_function = didp_mpi::create_fx_hash();
-            let offset = time_keeper.elapsed_time();
+            let offset = search_time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
             solver.set_time_offset(offset);
@@ -206,12 +218,16 @@ where
                     .unwrap();
             }
 
-            (solution, statistics_list)
-        };
+            didp_mpi::dump_solution(&solution);
 
-        didp_mpi::dump_solution(&solution);
-        didp_mpi::dump_statistics(&statistics_list);
-        Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
+            println!(
+                "Time to the final solution: {}s",
+                time_keeper.elapsed_time()
+            );
+
+            didp_mpi::dump_statistics(&statistics_list);
+            Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
+        };
     } else {
         let mut finished_flag = false;
         root_process.broadcast_into(&mut finished_flag);
@@ -228,7 +244,7 @@ where
             root_process.broadcast_into(&mut p);
             let table = didp_mpi::create_abstract_bytewise_random_table(&input.generator.model, p);
             let hash_function = didp_mpi::create_bytewise_zobrist_hash(table);
-            let offset = time_keeper.elapsed_time();
+            let offset = search_time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
             solver.set_time_offset(offset);
@@ -248,7 +264,7 @@ where
             }
         } else {
             let hash_function = didp_mpi::create_fx_hash();
-            let offset = time_keeper.elapsed_time();
+            let offset = search_time_keeper.elapsed_time();
             let mut solver =
                 HdHac::new(input, evaluators, parameters, hash_function, &communicator);
             solver.set_time_offset(offset);
@@ -312,16 +328,25 @@ fn main() {
     let universe = mpi::initialize().unwrap();
     let rank = universe.world().rank();
 
+    if rank == 0 {
+        println!("Time to initialize MPI: {}s", time_keeper.elapsed_time());
+    }
+
     let mut args = std::env::args();
     args.next();
     let model = didp_mpi::read_model(&mut args);
     let config_filename = args.next().expect("Config filename is not specified");
 
     match model.cost_type {
-        CostType::Integer => main_with_cost_type::<Integer>(universe, model, &config_filename),
-        CostType::Continuous => {
-            main_with_cost_type::<OrderedContinuous>(universe, model, &config_filename)
+        CostType::Integer => {
+            main_with_cost_type::<Integer>(universe, model, &config_filename, &time_keeper)
         }
+        CostType::Continuous => main_with_cost_type::<OrderedContinuous>(
+            universe,
+            model,
+            &config_filename,
+            &time_keeper,
+        ),
     }
 
     if rank == 0 {
