@@ -93,6 +93,11 @@ fn main_with_cost_type<T>(
     }
 
     let root_process = communicator.process_at_rank(0);
+
+    if communicator.rank() == 0 {
+        println!("Time for initialization: {}s", time_keeper.elapsed_time());
+    }
+
     let search_time_keeper = TimeKeeper::default();
 
     if communicator.rank() == 0 {

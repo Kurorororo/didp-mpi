@@ -36,6 +36,8 @@ where
             parameters.primal_bound,
         );
 
+    println!("Time for initialization: {}s", time_keeper.elapsed_time());
+
     let mut solver = Hac::new(
         input,
         transition_evaluator,

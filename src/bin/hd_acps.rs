@@ -84,6 +84,10 @@ fn main_with_cost_type_and_hash_function<T, H>(
         parameters,
     };
 
+    if communicator.rank() == 0 {
+        println!("Time for initialization: {}s", time_keeper.elapsed_time());
+    }
+
     let mut solver = HdAcps::new(
         input,
         evaluators,

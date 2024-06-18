@@ -32,6 +32,8 @@ where
             parameters.primal_bound,
         );
 
+    println!("Time for initialization: {}s", time_keeper.elapsed_time());
+
     let mut solver =
         BestFirstSearch::new(input, transition_evaluator, base_cost_evaluator, parameters);
 

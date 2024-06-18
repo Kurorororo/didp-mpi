@@ -136,6 +136,10 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     parameters.beam_search_parameters.parameters.quiet |= communicator.rank() != 0;
 
+    if communicator.rank() == 0 {
+        println!("Time for initialization: {}s", time_keeper.elapsed_time());
+    }
+
     let mut solver = Cabs::<_, _, _, _>::new(input, beam_search, parameters);
     let mut solution = solver.search().unwrap();
 

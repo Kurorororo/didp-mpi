@@ -33,6 +33,8 @@ where
             parameters.primal_bound,
         );
 
+    println!("Time for initialization: {}s", time_keeper.elapsed_time());
+
     let mut solver = Acps::new(
         input,
         transition_evaluator,

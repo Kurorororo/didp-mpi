@@ -71,6 +71,9 @@ where
             parameters,
         )
     };
+
+    println!("Time for initialization: {}s", time_keeper.elapsed_time());
+
     let mut solver = Cabs::<_, FNode<_>, _>::new(input, beam_search, parameters);
 
     let solution =
