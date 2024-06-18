@@ -55,6 +55,7 @@ fn construct_solution<V>(
     forced.reverse();
     ids.push(last.id);
     forced.push(last.forced);
+    result.clear();
 
     for (id, forced) in ids.into_iter().zip(forced) {
         if forced {
