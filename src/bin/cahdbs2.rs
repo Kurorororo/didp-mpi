@@ -1,6 +1,6 @@
 use didp_mpi::{
     AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType, IsFloat,
-    NodeDatatype, Statistics,
+    NodeMessage, Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{

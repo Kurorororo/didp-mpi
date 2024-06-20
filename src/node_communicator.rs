@@ -28,7 +28,7 @@ pub struct NodeCommunicator<'a, C, M, T> {
 impl<'a, C, M, T> NodeCommunicator<'a, C, M, T>
 where
     C: Communicator,
-    M: NodeDatatype<T>,
+    M: NodeDatatype<T, S = M>,
     T: Numeric + IsFloat,
 {
     pub fn new(communicator: &'a C, tag: Tag, model: Rc<Model>) -> Self {
@@ -84,7 +84,7 @@ pub struct TimeStampedNodeCommunicator<'a, C, M, T> {
 impl<'a, C, M, T> TimeStampedNodeCommunicator<'a, C, M, T>
 where
     C: Communicator,
-    M: NodeDatatype<T>,
+    M: NodeDatatype<T, S = M>,
     T: Numeric + IsFloat,
 {
     pub fn new(
@@ -191,7 +191,7 @@ pub struct TimeStampedNodeDepthCommunicator<'a, C, M, T> {
 impl<'a, C, M, T> TimeStampedNodeDepthCommunicator<'a, C, M, T>
 where
     C: Communicator,
-    M: NodeDatatype<T>,
+    M: NodeDatatype<T, S = M>,
     T: Numeric + IsFloat,
 {
     pub fn new(

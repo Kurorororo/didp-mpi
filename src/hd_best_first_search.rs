@@ -1,5 +1,5 @@
 use didp_yaml::heuristic_search_solver::CostToDump;
-use dypdl::{prelude::*, variable_type::Numeric};
+use dypdl::prelude::*;
 use dypdl_heuristic_search::search_algorithm::{
     data_structure::{self, HashableSignatureVariables, StateWithHashableSignatureVariables},
     SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId,
@@ -11,7 +11,7 @@ use std::str::FromStr;
 use std::{collections::BinaryHeap, hash::Hash};
 
 use crate::node_communicator::TimeStampedNodeCommunicator;
-use crate::node_data_type::NodeDatatype;
+use crate::node_message::NodeMessage;
 use crate::statistics::Statistics;
 use crate::{
     bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
@@ -26,7 +26,7 @@ use crate::{
 
 pub struct HdBestFirstSearch<'a, T, N, M, L, R, B, F, V = Transition>
 where
-    T: Numeric + IsFloat + Ord + Display,
+    T: IsFloat + Ord + Display,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
     V: TransitionInterface + Clone + Default,
 {
@@ -44,11 +44,11 @@ where
 
 impl<'a, T, N, M, L, R, B, F, V> HdBestFirstSearch<'a, T, N, M, L, R, B, F, V>
 where
-    T: Numeric + IsFloat + Ord + Display + Hash,
+    T: IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
-    M: Clone + NodeDatatype<T>,
+    M: Clone + NodeMessage<T>,
     L: FnMut(
         StateInRegistry,
         T,

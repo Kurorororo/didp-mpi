@@ -18,6 +18,7 @@ mod mpi_anytime_search;
 mod mpi_termination_detector;
 mod node_communicator;
 mod node_data_type;
+mod node_message;
 mod partial_solution;
 mod state_serializer;
 mod statistics;
@@ -55,6 +56,6 @@ pub use io::{
 pub use is_float::IsFloat;
 pub use key_value_statistics::KeyValueStatistics;
 pub use mpi_anytime_search::{MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters};
-pub use node_data_type::NodeDatatype;
+pub use node_message::NodeMessage;
 pub use statistics::Statistics;
 pub use util::{make_input_and_dual_bound_evaluators, make_input_and_mpi_dual_bound_evalautors};

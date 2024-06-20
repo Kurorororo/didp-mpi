@@ -25,7 +25,7 @@ use std::rc::Rc;
 use std::str::FromStr;
 
 use crate::is_float::IsFloat;
-use crate::node_data_type::NodeDatatype;
+use crate::node_message::NodeMessage;
 use crate::partial_solution;
 use crate::partial_solution::PartialSolutionTags;
 use crate::statistics::Statistics;
@@ -250,7 +250,7 @@ where
 
 impl<'a, T, B, V> MpiSolutionManager<'a, T, B, V>
 where
-    T: Numeric + IsFloat + Ord + Display + Hash,
+    T: IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     B: FnMut(T, T) -> T,
@@ -939,7 +939,7 @@ where
 
 pub struct MpiAnytimeSearch<'a, T, N, M, L, R, B, F, V = Transition>
 where
-    T: Numeric + IsFloat + Ord + Display,
+    T: IsFloat + Ord + Display,
     N: BfsNodeWithDistributedIdChain<T>,
     V: TransitionInterface + Clone + Default,
 {
@@ -962,11 +962,11 @@ pub struct MpiAnytimeSearchEvaluators<L, R, B> {
 
 impl<'a, T, N, M, L, R, B, F, V> MpiAnytimeSearch<'a, T, N, M, L, R, B, F, V>
 where
-    T: Numeric + IsFloat + Ord + Display + Hash,
+    T: IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
-    M: NodeDatatype<T>,
+    M: NodeMessage<T>,
     L: FnMut(
         StateInRegistry,
         T,

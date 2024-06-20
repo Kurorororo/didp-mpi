@@ -1,6 +1,6 @@
 use didp_mpi::{
     AdditionalCommonParameters, HashType, HdApps, IsFloat, KeyValueStatistics,
-    MpiAnytimeSearchParameters, NodeDatatype, Statistics,
+    MpiAnytimeSearchParameters, NodeMessage, Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{

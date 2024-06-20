@@ -1,8 +1,8 @@
-use crate::distributed_f_node::FNodeEvaluators;
 use crate::distributed_id_chain::GetDistributedTransitionIdChain;
 use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
 use crate::state_serializer::StateSerializer;
+use crate::{distributed_f_node::FNodeEvaluators, node_message::NodeMessage};
 
 use super::distributed_f_node::DistributedFNode;
 use super::distributed_id_chain::DistributedTransitionIdChain;
@@ -80,6 +80,8 @@ impl<T> NodeDatatype<T> for DistributedFNodeMessage<T>
 where
     T: Numeric + IsFloat,
 {
+    type S = Self;
+
     fn get_total_size(serializer: &StateSerializer) -> usize {
         let size = if T::is_float() {
             mem::size_of::<Continuous>()
@@ -202,30 +204,6 @@ where
         }
     }
 
-    fn state(&self) -> &StateWithHashableSignatureVariables {
-        &self.state
-    }
-
-    fn signature(&self) -> &HashableSignatureVariables {
-        &self.state.signature_variables
-    }
-
-    fn cost(&self, _: &Model) -> T {
-        self.g
-    }
-
-    fn bound(&self, model: &Model) -> Option<T> {
-        if model.reduce_function == ReduceFunction::Max {
-            Some(self.f)
-        } else {
-            Some(-self.f)
-        }
-    }
-
-    fn set_parent_rank(&self, parent_rank: Rank) {
-        self.transition_id_chain.parent_rank.set(Some(parent_rank));
-    }
-
     fn get_bound_from_buffer(
         model: &Model,
         serializer: &StateSerializer,
@@ -248,6 +226,32 @@ where
         };
 
         Some(bound)
+    }
+}
+
+impl<T: IsFloat> NodeMessage<T> for DistributedFNodeMessage<T> {
+    fn state(&self) -> &StateWithHashableSignatureVariables {
+        &self.state
+    }
+
+    fn signature(&self) -> &HashableSignatureVariables {
+        &self.state.signature_variables
+    }
+
+    fn cost(&self, _: &Model) -> T {
+        self.g
+    }
+
+    fn bound(&self, model: &Model) -> Option<T> {
+        if model.reduce_function == ReduceFunction::Max {
+            Some(self.f)
+        } else {
+            Some(-self.f)
+        }
+    }
+
+    fn set_parent_rank(&self, parent_rank: Rank) {
+        self.transition_id_chain.parent_rank.set(Some(parent_rank));
     }
 }
 

@@ -1,18 +1,14 @@
 use dypdl::prelude::*;
-use dypdl_heuristic_search::search_algorithm::data_structure::{
-    HashableSignatureVariables, StateWithHashableSignatureVariables,
-};
 use mpi::{
     datatype::{DatatypeRef, UserDatatype},
-    Address, Count, Rank,
+    Address, Count,
 };
 
-use crate::{
-    distributed_id_chain::GetDistributedTransitionIdChain, is_float::IsFloat,
-    state_serializer::StateSerializer,
-};
+use crate::state_serializer::StateSerializer;
 
-pub trait NodeDatatype<T: IsFloat>: GetDistributedTransitionIdChain {
+pub trait NodeDatatype<T> {
+    type S;
+
     fn get_total_size(serializer: &StateSerializer) -> usize;
 
     fn get_datatype_blocklengths(serializer: &StateSerializer) -> Vec<Count>;
@@ -31,17 +27,7 @@ pub trait NodeDatatype<T: IsFloat>: GetDistributedTransitionIdChain {
 
     fn serialize_to(&self, serializer: &StateSerializer, buffer: &mut [u8]);
 
-    fn deserialize(serializer: &StateSerializer, buffer: &[u8]) -> Self;
-
-    fn state(&self) -> &StateWithHashableSignatureVariables;
-
-    fn cost(&self, model: &Model) -> T;
-
-    fn bound(&self, model: &Model) -> Option<T>;
-
-    fn signature(&self) -> &HashableSignatureVariables;
-
-    fn set_parent_rank(&self, parent_rank: Rank);
+    fn deserialize(serializer: &StateSerializer, buffer: &[u8]) -> Self::S;
 
     fn get_bound_from_buffer(
         model: &Model,

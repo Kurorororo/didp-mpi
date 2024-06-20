@@ -21,7 +21,7 @@ use crate::distributed_id_chain::{
 };
 use crate::is_float::IsFloat;
 use crate::node_communicator::NodeCommunicator;
-use crate::node_data_type::NodeDatatype;
+use crate::node_message::NodeMessage;
 use crate::partial_solution::{
     receive_partial_solution, send_partial_solution, PartialSolutionTags,
 };
@@ -50,7 +50,7 @@ struct BufferedNodeCommunicator<'a, C, M, T> {
 impl<'a, C, M, T> BufferedNodeCommunicator<'a, C, M, T>
 where
     C: Communicator,
-    M: NodeDatatype<T>,
+    M: NodeMessage<T>,
     T: IsFloat,
 {
     fn new(communicator: &'a C, tag: Tag, model: Rc<Model>, capacity: usize) -> Self {
@@ -332,7 +332,7 @@ pub fn hd_beam_search2<'a, T, N, M, E, B, F, V>(
 where
     T: Numeric + IsFloat + Ord + Display,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
-    M: Clone + NodeDatatype<T>,
+    M: Clone + NodeMessage<T>,
     E: Fn(&N, &TransitionWithId<V>, Option<T>) -> Option<M>,
     B: Fn(T, T) -> T,
     F: Fn(&HashableSignatureVariables) -> u64,

@@ -11,7 +11,7 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::statistics::Statistics;
+use crate::initiation;
 use crate::{
     bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
 };
@@ -22,8 +22,8 @@ use crate::{
         MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters,
     },
 };
-use crate::{initiation, node_data_type::NodeDatatype};
 use crate::{node_communicator::TimeStampedNodeDepthCommunicator, InitiationResult};
+use crate::{node_message::NodeMessage, statistics::Statistics};
 
 pub struct HdHac<'a, T, N, M, L, R, B, F, V = Transition>
 where
@@ -52,7 +52,7 @@ where
     <T as FromStr>::Err: Debug,
     CostToDump: From<T>,
     N: BfsNodeWithDistributedIdChain<T> + From<M> + Clone,
-    M: Clone + NodeDatatype<T> + From<N>,
+    M: Clone + NodeMessage<T> + From<N>,
     L: FnMut(
         StateInRegistry,
         T,
