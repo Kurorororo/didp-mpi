@@ -128,9 +128,16 @@ where
                     self.open.clear();
                 }
             } else {
-                if let Some(dual_bound) = node.bound(model) {
-                    self.solution.time = self.time_keeper.elapsed_time();
-                    util::update_bound_if_better(&mut self.solution, dual_bound, model, self.quiet);
+                if N::ordered_by_bound() || self.open.is_empty() {
+                    if let Some(dual_bound) = node.bound(model) {
+                        self.solution.time = self.time_keeper.elapsed_time();
+                        util::update_bound_if_better(
+                            &mut self.solution,
+                            dual_bound,
+                            model,
+                            self.quiet,
+                        );
+                    }
                 }
 
                 return Some((node, depth));

@@ -131,7 +131,9 @@ where
                 .node_communicator
                 .receive_and_discard(source_rank, self.local_dual_bound)
             {
-                self.local_dual_bound = Some(bound);
+                if N::ordered_by_bound() {
+                    self.local_dual_bound = Some(bound);
+                }
             }
         } else if let Some(node) = self
             .node_communicator
@@ -232,7 +234,11 @@ where
     }
 
     fn compute_local_dual_bound(&self) -> Option<T> {
-        self.open.peek().and_then(|node| node.bound(&self.model))
+        if N::ordered_by_bound() {
+            self.open.peek().and_then(|node| node.bound(&self.model))
+        } else {
+            None
+        }
     }
 
     pub fn search(&mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {

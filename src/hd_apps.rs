@@ -144,7 +144,9 @@ where
                 .node_communicator
                 .receive_and_discard(source_rank, self.local_dual_bound)
             {
-                self.local_dual_bound = Some(bound);
+                if N::ordered_by_bound() {
+                    self.local_dual_bound = Some(bound);
+                }
             }
         } else if let Some(node) = self
             .node_communicator
@@ -248,16 +250,20 @@ where
     }
 
     fn compute_local_dual_bound(&self) -> Option<T> {
-        let open_best = self.open.peek().and_then(|n| n.bound(&self.model));
-        let children_best = self.children.peek().and_then(|n| n.bound(&self.model));
-        let suspend_best = self.suspend.peek().and_then(|n| n.bound(&self.model));
-        let dual_bound_array = [open_best, children_best, suspend_best];
-        let dual_bound_iter = dual_bound_array.iter().filter_map(|x| *x);
+        if N::ordered_by_bound() {
+            let open_best = self.open.peek().and_then(|n| n.bound(&self.model));
+            let children_best = self.children.peek().and_then(|n| n.bound(&self.model));
+            let suspend_best = self.suspend.peek().and_then(|n| n.bound(&self.model));
+            let dual_bound_array = [open_best, children_best, suspend_best];
+            let dual_bound_iter = dual_bound_array.iter().filter_map(|x| *x);
 
-        if self.model.reduce_function == ReduceFunction::Max {
-            dual_bound_iter.max()
+            if self.model.reduce_function == ReduceFunction::Max {
+                dual_bound_iter.max()
+            } else {
+                dual_bound_iter.min()
+            }
         } else {
-            dual_bound_iter.min()
+            None
         }
     }
 

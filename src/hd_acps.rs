@@ -138,7 +138,9 @@ where
                 .node_communicator
                 .receive_and_discard(source_rank, self.local_dual_bound)
             {
-                self.local_dual_bound = Some(bound);
+                if N::ordered_by_bound() {
+                    self.local_dual_bound = Some(bound);
+                }
             }
         } else if let Some((node, depth)) = self
             .node_communicator
@@ -243,15 +245,19 @@ where
     }
 
     fn compute_local_dual_bound(&self) -> Option<T> {
-        let dual_bound_iter = self
-            .open
-            .iter()
-            .filter_map(|o| o.peek().and_then(|n| n.bound(&self.model)));
+        if N::ordered_by_bound() {
+            let dual_bound_iter = self
+                .open
+                .iter()
+                .filter_map(|o| o.peek().and_then(|n| n.bound(&self.model)));
 
-        if self.model.reduce_function == ReduceFunction::Max {
-            dual_bound_iter.max()
+            if self.model.reduce_function == ReduceFunction::Max {
+                dual_bound_iter.max()
+            } else {
+                dual_bound_iter.min()
+            }
         } else {
-            dual_bound_iter.min()
+            None
         }
     }
 
