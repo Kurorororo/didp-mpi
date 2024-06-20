@@ -47,7 +47,10 @@ where
         }
     }
 
-    pub fn send(&mut self, destination_rank: Rank, node: M) {
+    pub fn send<N>(&mut self, destination_rank: Rank, node: N)
+    where
+        N: NodeDatatype<T, S = M>,
+    {
         node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
         let destination = self.communicator.process_at_rank(destination_rank);
         let v = unsafe { View::with_count_and_datatype(&self.tmp_buffer, 1, &self.user_datatype) };
@@ -121,7 +124,10 @@ where
         }
     }
 
-    pub fn send(&mut self, destination_rank: Rank, node: &M) {
+    pub fn send<N>(&mut self, destination_rank: Rank, node: &N)
+    where
+        N: NodeDatatype<T, S = M>,
+    {
         node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
         self.communicator
             .send(&mut self.tmp_buffer, destination_rank);
@@ -234,7 +240,10 @@ where
         }
     }
 
-    pub fn send(&mut self, destination_rank: Rank, node: &M, depth: usize) {
+    pub fn send<N>(&mut self, destination_rank: Rank, node: &N, depth: usize)
+    where
+        N: NodeDatatype<T, S = M>,
+    {
         node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
         self.tmp_buffer[self.offset..self.offset + mem::size_of::<usize>()]
             .copy_from_slice(depth.as_bytes());

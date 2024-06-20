@@ -10,6 +10,8 @@ mod hd_apps;
 mod hd_beam_search2;
 mod hd_best_first_search;
 mod hd_hac;
+mod hd_ld_best_first_search;
+mod hd_ld_hac;
 mod initiation;
 mod io;
 mod is_float;
@@ -46,6 +48,8 @@ pub use hd_apps::HdApps;
 pub use hd_beam_search2::hd_beam_search2;
 pub use hd_best_first_search::HdBestFirstSearch;
 pub use hd_hac::HdHac;
+pub use hd_ld_best_first_search::HdLdBestFirstSearch;
+pub use hd_ld_hac::HdLdHac;
 pub use initiation::{cbfs_initiator, hac_initiator, InitiationParameters, InitiationResult};
 pub use io::{
     dump_solution, dump_statistics, load_bool_from_map, load_cabs_parameters_from_map,
