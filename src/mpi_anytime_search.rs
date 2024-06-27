@@ -948,10 +948,9 @@ where
     generator: SuccessorGenerator<TransitionWithId<V>>,
     local_successor_evaluator: L,
     remote_successor_evaluator: R,
-    registry: StateRegistry<T, N>,
     id_to_chain_node: Vec<Rc<DistributedTransitionIdChain>>,
     solution_manager: MpiSolutionManager<'a, T, B, V>,
-    _phantom: PhantomData<M>,
+    _phantom: PhantomData<(N, M)>,
 }
 
 pub struct MpiAnytimeSearchEvaluators<L, R, B> {
@@ -998,7 +997,6 @@ where
         hash_function: F,
         communicator: &'a SimpleCommunicator,
     ) -> Self {
-        let capacity = parameters.parameters.initial_registry_capacity;
         let solution_manager = MpiSolutionManager::new(
             &generator,
             suffix,
@@ -1007,19 +1005,12 @@ where
             communicator,
         );
 
-        let mut registry = StateRegistry::<_, _>::new(generator.model.clone());
-
-        if let Some(capacity) = capacity {
-            registry.reserve(capacity);
-        }
-
         Self {
             communicator,
             hash_function,
             generator,
             local_successor_evaluator: evaluators.local_successor_evaluator,
             remote_successor_evaluator: evaluators.remote_successor_evaluator,
-            registry,
             id_to_chain_node: Vec::default(),
             solution_manager,
             _phantom: PhantomData,
@@ -1094,12 +1085,12 @@ where
         Some(node)
     }
 
-    pub fn open_node(&mut self, node: N) -> Option<Rc<N>> {
-        Self::open_node_inner(node, &mut self.registry, &mut self.solution_manager)
+    pub fn open_node(&mut self, node: N, registry: &mut StateRegistry<T, N>) -> Option<Rc<N>> {
+        Self::open_node_inner(node, registry, &mut self.solution_manager)
     }
 
-    pub fn close_node(&mut self, node: N) {
-        let result = self.registry.insert(node);
+    pub fn close_node(&mut self, node: N, registry: &mut StateRegistry<T, N>) {
+        let result = registry.insert(node);
 
         if let Some(node) = result.information {
             self.solution_manager.increment_generated();
@@ -1107,7 +1098,11 @@ where
         }
     }
 
-    pub fn generate_root_node(&mut self, node: Option<M>) -> Option<Rc<N>> {
+    pub fn generate_root_node(
+        &mut self,
+        node: Option<M>,
+        registry: &mut StateRegistry<T, N>,
+    ) -> Option<Rc<N>> {
         if let Some(node) = node {
             let hash_value = (self.hash_function)(node.signature());
             let assigned_rank = (hash_value % self.communicator.size() as u64) as Rank;
@@ -1134,7 +1129,7 @@ where
                         self.solution_manager.update_dual_bound(bound);
                     }
 
-                    self.open_node(node)
+                    self.open_node(node, registry)
                 }
             } else {
                 None
@@ -1144,14 +1139,14 @@ where
         }
     }
 
-    pub fn close_root_node(&mut self, node: M) {
+    pub fn close_root_node(&mut self, node: M, registry: &mut StateRegistry<T, N>) {
         let hash_value = (self.hash_function)(node.signature());
         let assigned_rank = (hash_value % self.communicator.size() as u64) as Rank;
 
         if assigned_rank == self.communicator.rank() {
             self.solution_manager.increment_generated();
             let node = N::from(node);
-            self.close_node(node)
+            self.close_node(node, registry)
         }
     }
 
@@ -1167,6 +1162,7 @@ where
     pub fn expand(
         &mut self,
         node: Rc<N>,
+        registry: &mut StateRegistry<T, N>,
         keep_buffer: &mut Vec<Rc<N>>,
         send_buffer: &mut Vec<(Rank, M)>,
     ) -> bool {
@@ -1221,7 +1217,7 @@ where
                         g,
                         &transition,
                         node.get_distributed_transition_id_chain(),
-                        &mut self.registry,
+                        registry,
                         self.solution_manager.get_primal_bound(),
                     );
 

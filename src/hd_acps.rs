@@ -40,6 +40,7 @@ where
     progressive_parameters: ProgressiveSearchParameters,
     width: usize,
     open: Vec<BinaryHeap<Rc<N>>>,
+    registry: StateRegistry<T, N>,
     local_dual_bound: Option<T>,
     is_time_out: bool,
     n_remaining_time_out_ack: usize,
@@ -92,6 +93,7 @@ where
         communicator: &'a SimpleCommunicator,
     ) -> HdAcps<'a, T, N, M, L, R, B, F, V> {
         let model = input.generator.model.clone();
+        let capacity = parameters.parameters.initial_registry_capacity;
         let mut search = MpiAnytimeSearch::new(
             input.generator,
             input.solution_suffix,
@@ -109,8 +111,13 @@ where
         );
 
         let mut open = vec![BinaryHeap::new()];
+        let mut registry = StateRegistry::new(model.clone());
 
-        if let Some(node) = search.generate_root_node(input.node) {
+        if let Some(capacity) = capacity {
+            registry.reserve(capacity);
+        }
+
+        if let Some(node) = search.generate_root_node(input.node, &mut registry) {
             open[0].push(node);
         }
 
@@ -122,6 +129,7 @@ where
             progressive_parameters,
             width: progressive_parameters.init,
             open,
+            registry,
             local_dual_bound: None,
             is_time_out: false,
             n_remaining_time_out_ack: 0,
@@ -148,7 +156,7 @@ where
         {
             let node = N::from(node);
 
-            if let Some(node) = self.search.open_node(node) {
+            if let Some(node) = self.search.open_node(node, &mut self.registry) {
                 while depth >= self.open.len() {
                     self.open.push(BinaryHeap::new());
                 }
@@ -316,7 +324,12 @@ where
                 }
 
                 popped += 1;
-                goal_found |= self.search.expand(node, &mut keep_buffer, &mut send_buffer);
+                goal_found |= self.search.expand(
+                    node,
+                    &mut self.registry,
+                    &mut keep_buffer,
+                    &mut send_buffer,
+                );
 
                 for (destination_rank, successor) in send_buffer.drain(..) {
                     self.node_communicator

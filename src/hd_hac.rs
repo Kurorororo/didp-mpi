@@ -37,6 +37,7 @@ where
     node_communicator: TimeStampedNodeDepthCommunicator<'a, SimpleCommunicator, M, T>,
     open: BinaryHeap<(Rc<N>, usize)>,
     layered_open: Vec<BinaryHeap<Rc<N>>>,
+    registry: StateRegistry<T, N>,
     current_depth: usize,
     is_layered_turn: bool,
     local_dual_bound: Option<T>,
@@ -94,6 +95,7 @@ where
         communicator: &'a SimpleCommunicator,
     ) -> Self {
         let model = input.generator.model.clone();
+        let capacity = parameters.parameters.initial_registry_capacity;
         let mut search = MpiAnytimeSearch::new(
             input.generator,
             input.solution_suffix,
@@ -112,8 +114,13 @@ where
 
         let mut open = BinaryHeap::new();
         let layered_open = vec![BinaryHeap::new()];
+        let mut registry = StateRegistry::new(model.clone());
 
-        if let Some(node) = search.generate_root_node(input.node) {
+        if let Some(capacity) = capacity {
+            registry.reserve(capacity);
+        }
+
+        if let Some(node) = search.generate_root_node(input.node, &mut registry) {
             open.push((node, 0));
         }
 
@@ -124,6 +131,7 @@ where
             node_communicator,
             open,
             layered_open,
+            registry,
             current_depth: 0,
             is_layered_turn: false,
             local_dual_bound: None,
@@ -171,7 +179,7 @@ where
                     }
 
                     if node.is_closed() {
-                        self.search.close_node((*node).clone());
+                        self.search.close_node((*node).clone(), &mut self.registry);
                     } else {
                         self.open_node((*node).clone(), depth);
                     }
@@ -240,7 +248,7 @@ where
                 .receive(source_rank, self.search.get_primal_bound())
             {
                 let node = N::from(node);
-                self.search.close_node(node);
+                self.search.close_node(node, &mut self.registry);
             }
         }
 
@@ -253,11 +261,11 @@ where
     }
 
     pub fn close_root_node(&mut self, node: M) {
-        self.search.close_root_node(node)
+        self.search.close_root_node(node, &mut self.registry)
     }
 
     fn open_node(&mut self, node: N, depth: usize) {
-        if let Some(node) = self.search.open_node(node) {
+        if let Some(node) = self.search.open_node(node, &mut self.registry) {
             self.open.push((node.clone(), depth));
 
             while depth >= self.layered_open.len() {
@@ -505,7 +513,8 @@ where
             }
 
             if let Some((node, depth)) = self.pop_node_and_depth() {
-                self.search.expand(node, &mut keep_buffer, &mut send_buffer);
+                self.search
+                    .expand(node, &mut self.registry, &mut keep_buffer, &mut send_buffer);
 
                 for (destination_rank, successor) in send_buffer.drain(..) {
                     self.node_communicator

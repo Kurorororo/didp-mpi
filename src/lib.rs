@@ -18,7 +18,6 @@ mod io;
 mod is_float;
 mod key_value_statistics;
 mod layered_beams;
-mod local_layer_message;
 mod mpi_anytime_search;
 mod mpi_termination_detector;
 mod node_communicator;
@@ -50,7 +49,6 @@ pub use hash_functions::{
 pub use hd_acps::HdAcps;
 pub use hd_apps::HdApps;
 pub use hd_beam_search2::hd_beam_search2;
-pub use hd_beam_search3::hd_beam_search3;
 pub use hd_best_first_search::HdBestFirstSearch;
 pub use hd_hac::HdHac;
 pub use hd_ld_best_first_search::HdLdBestFirstSearch;

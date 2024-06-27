@@ -42,6 +42,7 @@ where
     open: BinaryHeap<Rc<N>>,
     children: BinaryHeap<Rc<N>>,
     suspend: BinaryHeap<Rc<N>>,
+    registry: StateRegistry<T, N>,
     local_dual_bound: Option<T>,
     is_time_out: bool,
     n_remaining_time_out_ack: usize,
@@ -94,6 +95,7 @@ where
         communicator: &'a SimpleCommunicator,
     ) -> HdApps<'a, T, N, M, L, R, B, F, V> {
         let model = input.generator.model.clone();
+        let capacity = parameters.parameters.initial_registry_capacity;
         let mut search = MpiAnytimeSearch::new(
             input.generator,
             input.solution_suffix,
@@ -113,8 +115,13 @@ where
         let open = BinaryHeap::new();
         let mut children = BinaryHeap::new();
         let suspend = BinaryHeap::new();
+        let mut registry = StateRegistry::new(model.clone());
 
-        if let Some(node) = search.generate_root_node(input.node) {
+        if let Some(capacity) = capacity {
+            registry.reserve(capacity);
+        }
+
+        if let Some(node) = search.generate_root_node(input.node, &mut registry) {
             children.push(node);
         }
 
@@ -128,6 +135,7 @@ where
             open,
             children,
             suspend,
+            registry,
             local_dual_bound: None,
             is_time_out: false,
             n_remaining_time_out_ack: 0,
@@ -154,7 +162,7 @@ where
         {
             let node = N::from(node);
 
-            if let Some(node) = self.search.open_node(node) {
+            if let Some(node) = self.search.open_node(node, &mut self.registry) {
                 self.children.push(node);
             }
         }
@@ -393,7 +401,12 @@ where
                     }
                 }
 
-                goal_found |= self.search.expand(node, &mut keep_buffer, &mut send_buffer);
+                goal_found |= self.search.expand(
+                    node,
+                    &mut self.registry,
+                    &mut keep_buffer,
+                    &mut send_buffer,
+                );
 
                 for (destination_rank, successor) in send_buffer.drain(..) {
                     self.node_communicator.send(destination_rank, &successor);

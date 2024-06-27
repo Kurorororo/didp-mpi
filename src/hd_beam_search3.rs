@@ -1,115 +1,347 @@
+use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::search_algorithm::{
-    data_structure::HashableSignatureVariables, util::TimeKeeper, BeamSearchParameters,
-    SearchInput, Solution, TransitionWithId,
+    data_structure::{self, HashableSignatureVariables, StateWithHashableSignatureVariables},
+    SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId,
 };
 use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
-use std::fmt::Display;
+use std::collections::BinaryHeap;
+use std::fmt::{Debug, Display};
+use std::hash::Hash;
+use std::rc::Rc;
+use std::str::FromStr;
 
-use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
-use crate::is_float::IsFloat;
-use crate::layered_beams::LayeredBeams;
-use crate::local_layer_message::LocalLayerMessage;
-use crate::node_communicator::NodeDepthCommunicator;
-use crate::node_message::NodeMessage;
-use crate::partial_solution::PartialSolutionTags;
-use crate::retrieve_solution::{self, RetrieveSolutionTags};
-use crate::statistics::Statistics;
-
-const TAG_NODE: Tag = 0;
-const TAG_ALL_NODES_SENT: Tag = 1;
-const TAG_LOCAL_LAYER_MESSAGE: Tag = 2;
-const TAG_PARTIAL_SOLUTION_REQUEST: Tag = 3;
-const TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA: Tag = 4;
-const TAG_PARTIAL_SOLUTION_TRANSITION_IDS: Tag = 5;
-const TAG_PARTIAL_SOLUTION_TRANSITION_FORCED: Tag = 6;
-const TAG_PARTIAL_SOLUTION_FINISHED: Tag = 7;
-const TAG_RETRIEVE_SOLUTION: RetrieveSolutionTags = RetrieveSolutionTags {
-    tag_partial_solution_request: TAG_PARTIAL_SOLUTION_REQUEST,
-    tag_partial_solution: PartialSolutionTags {
-        fixed_length_data: TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA,
-        transition_ids: TAG_PARTIAL_SOLUTION_TRANSITION_IDS,
-        transition_forced: TAG_PARTIAL_SOLUTION_TRANSITION_FORCED,
-    },
-    tag_partial_solution_finished: TAG_PARTIAL_SOLUTION_FINISHED,
+use crate::{
+    bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
 };
+use crate::{bfs_node_with_distributed_id_chain::NodeGenerationResult, is_float::IsFloat};
+use crate::{
+    distributed_id_chain::DistributedTransitionIdChain,
+    mpi_anytime_search::{
+        MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters,
+    },
+};
+use crate::{
+    initiation,
+    layered_beams::{self, LayeredBeams},
+};
+use crate::{node_communicator::TimeStampedNodeDepthCommunicator, InitiationResult};
+use crate::{node_message::NodeMessage, statistics::Statistics};
 
-pub fn hd_beam_search3<'a, T, N, M, E, B, F, V>(
-    input: &'a SearchInput<'a, M, TransitionWithId<V>>,
-    transition_evaluator: E,
-    base_cost_evaluator: B,
-    parameters: BeamSearchParameters<T>,
-    hash_function: F,
-    communicator: &'a SimpleCommunicator,
-    controller_rank: Rank,
-) -> (Solution<T, TransitionWithId<V>>, Option<Rank>, Statistics)
+pub struct Hdbs3<'a, T, N, M, L, R, B, F, V = Transition>
 where
     T: Numeric + IsFloat + Ord + Display,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
-    M: Clone + NodeMessage<T>,
-    E: Fn(&N, &TransitionWithId<V>, Option<T>) -> Option<M>,
-    B: Fn(T, T) -> T,
-    F: Fn(&HashableSignatureVariables) -> u64,
     V: TransitionInterface + Clone + Default,
 {
-    let this_rank = communicator.rank();
-    let time_keeper = parameters
-        .parameters
-        .time_limit
-        .map_or_else(TimeKeeper::default, TimeKeeper::with_time_limit);
+    model: Rc<Model>,
+    search: MpiAnytimeSearch<'a, T, N, M, L, R, B, F, V>,
+    communicator: &'a SimpleCommunicator,
+    node_communicator: TimeStampedNodeDepthCommunicator<'a, SimpleCommunicator, M, T>,
+    beam_size: usize,
+    layered_beams: LayeredBeams<T, N>,
+    local_dual_bound: Option<T>,
+    is_time_out: bool,
+    n_remaining_time_out_ack: usize,
+    is_checking_termination: bool,
+    is_terminated: bool,
+}
 
-    let quiet = this_rank != 0 || parameters.parameters.quiet;
-    let mut primal_bound = parameters.parameters.primal_bound;
-    let n_ranks = communicator.size() as u64;
+impl<'a, T, N, M, L, R, B, F, V> Hdbs3<'a, T, N, M, L, R, B, F, V>
+where
+    T: Numeric + IsFloat + Ord + Display + Hash,
+    <T as FromStr>::Err: Debug,
+    CostToDump: From<T>,
+    N: BfsNodeWithDistributedIdChain<T> + From<M> + Clone,
+    M: Clone + NodeMessage<T> + From<N>,
+    L: FnMut(
+        StateInRegistry,
+        T,
+        &TransitionWithId<V>,
+        &DistributedTransitionIdChain,
+        &mut StateRegistry<T, N>,
+        Option<T>,
+    ) -> NodeGenerationResult<Rc<N>>,
+    R: FnMut(
+        StateWithHashableSignatureVariables,
+        T,
+        &TransitionWithId<V>,
+        &DistributedTransitionIdChain,
+        Option<T>,
+    ) -> Option<M>,
+    B: FnMut(T, T) -> T,
+    F: FnMut(&HashableSignatureVariables) -> u64,
+    V: TransitionInterface + Clone + Default + 'static,
+    Transition: From<V> + From<TransitionWithId<V>>,
+    TransitionWithId<V>: Clone,
+{
+    const TAG_N_INITIAL_CLOSED_NODES: Tag =
+        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET;
+    const TAG_N_INITIAL_OPEN_NODES: Tag =
+        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 1;
+    const TAG_NODE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 2;
+    const TAG_SENT_ALL_NODES_IN_LAYER: Tag =
+        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 3;
+    const TAG_TIME_OUT: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 4;
+    const TAG_TIME_OUT_ACK: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 5;
+    const TAG_TERMINATION_DETECTION: Tag =
+        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 6;
+    const TAG_TERMINATE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 7;
 
-    let model = &input.generator.model;
-    let generator = &input.generator;
-    let suffix = input.solution_suffix;
+    /// Creates a new HDBS3 solver.
+    pub fn new(
+        input: SearchInput<'a, M, TransitionWithId<V>>,
+        evaluators: MpiAnytimeSearchEvaluators<L, R, B>,
+        parameters: MpiAnytimeSearchParameters<T>,
+        beam_size: usize,
+        hash_function: F,
+        communicator: &'a SimpleCommunicator,
+    ) -> Self {
+        let model = input.generator.model.clone();
+        let mut search = MpiAnytimeSearch::new(
+            input.generator,
+            input.solution_suffix,
+            evaluators,
+            parameters,
+            hash_function,
+            communicator,
+        );
 
-    let mut layered_beams = LayeredBeams::new(model.clone(), parameters.beam_size);
+        let node_communicator = TimeStampedNodeDepthCommunicator::new(
+            communicator,
+            Self::TAG_NODE,
+            Self::TAG_TERMINATION_DETECTION,
+            model.clone(),
+        );
 
-    let mut sent = 0;
-    let mut kept = 0;
-    let mut received = 0;
-    let mut generated = 0;
+        let mut layered_beams = LayeredBeams::new(model.clone(), beam_size);
+        let node_generator = |registry: &mut _| search.generate_root_node(input.node, registry);
 
-    if let Some(node) = input.node.clone() {
-        let hash_value = hash_function(node.signature());
-        let assigned_rank = (hash_value % n_ranks) as Rank;
+        layered_beams.insert_with(node_generator, 0);
 
-        if assigned_rank == this_rank {
+        Self {
+            model,
+            search,
+            communicator,
+            node_communicator,
+            beam_size,
+            layered_beams,
+            local_dual_bound: None,
+            is_time_out: false,
+            n_remaining_time_out_ack: 0,
+            is_checking_termination: false,
+            is_terminated: false,
+        }
+    }
+
+    fn open_node(&mut self, node: N, depth: usize) {
+        let node_generator = |registry: &mut _| self.search.open_node(node, registry);
+        self.layered_beams.insert_with(node_generator, depth);
+    }
+
+    fn receive_node(&mut self, source_rank: Rank) {
+        self.search.increment_received();
+
+        if self.is_time_out {
+            if let Some(bound) = self
+                .node_communicator
+                .receive_and_discard(source_rank, self.local_dual_bound)
+            {
+                if N::ordered_by_bound() {
+                    self.local_dual_bound = Some(bound);
+                }
+            }
+        } else if let Some((node, depth)) = self
+            .node_communicator
+            .receive(source_rank, self.search.get_primal_bound())
+        {
             let node = N::from(node);
-            layered_beams.insert(node, 0);
+            self.open_node(node, depth);
         }
     }
 
-    let mut expanded = 0;
-    let mut first_expanded_timestamp = 0.0;
-    let mut last_expanded_timestamp = 0.0;
-    let mut first_received_timestamp = 0.0;
-    let mut last_received_timestamp = 0.0;
-
-    let mut pruned = false;
-    let mut time_out = this_rank == controller_rank && time_keeper.check_time_limit(quiet);
-    // let mut incumbent = None;
-
-    for destination_rank in 0..n_ranks as Rank {
-        if destination_rank != this_rank {
-            let message = LocalLayerMessage::<T> {
-                pruned,
-                is_empty: layered_beams.is_empty(),
-                time_out,
-                bound: None,
-                cost: None,
-            };
-            message.send(communicator, destination_rank, TAG_LOCAL_LAYER_MESSAGE);
+    fn broadcast_time_out(&mut self) {
+        for destination_rank in 0..self.communicator.size() {
+            if destination_rank != self.communicator.rank() {
+                let buffer: [u8; 0] = [];
+                let destination_process = self.communicator.process_at_rank(destination_rank);
+                destination_process.buffered_send_with_tag(&buffer, Self::TAG_TIME_OUT);
+                self.n_remaining_time_out_ack += 1;
+            }
         }
     }
 
-    //let mut id_to_chain_node = vec![];
-    //let mut node_communicator =
-    //    NodeDepthCommunicator::<_, M, T>::new(communicator, TAG_NODE, model.clone(), capacity);
-    let any_process = communicator.any_process();
+    fn receive_time_out(&mut self, source_rank: Rank) {
+        let mut buffer: [u8; 0] = [];
+        let source_process = self.communicator.process_at_rank(source_rank);
+        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TIME_OUT);
+        self.is_time_out = true;
+        self.local_dual_bound = self.compute_local_dual_bound();
+        source_process.buffered_send_with_tag(&buffer, Self::TAG_TIME_OUT_ACK);
+    }
 
-    loop {}
+    fn receive_time_out_ack(&mut self, source_rank: Rank) {
+        let mut buffer: [u8; 0] = [];
+        let source_process = self.communicator.process_at_rank(source_rank);
+        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TIME_OUT_ACK);
+        self.n_remaining_time_out_ack -= 1;
+    }
+
+    fn broadcast_terminate(&mut self) {
+        for destination_rank in 0..self.communicator.size() {
+            if destination_rank != self.communicator.rank() {
+                let buffer: [u8; 0] = [];
+                let destination_process = self.communicator.process_at_rank(destination_rank);
+                destination_process.buffered_send_with_tag(&buffer, Self::TAG_TERMINATE);
+            }
+        }
+
+        self.is_terminated = true;
+    }
+
+    fn receive_terminate(&mut self, source_rank: Rank) {
+        let mut buffer: [u8; 0] = [];
+        let source_process = self.communicator.process_at_rank(source_rank);
+        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TERMINATE);
+        self.is_terminated = true;
+    }
+
+    fn receive_termination_detection(&mut self, source_rank: Rank) {
+        let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
+        let local_invalid = self.search.cannot_terminate()
+            || self.n_remaining_time_out_ack > 0
+            || (!self.is_time_out && !self.layered_beams.is_empty());
+        let result = self
+            .node_communicator
+            .receive_termination_detection_and_forward(
+                source_rank,
+                destination_rank,
+                local_invalid,
+            );
+
+        if let Some(result) = result {
+            if result {
+                self.broadcast_terminate();
+            }
+
+            self.is_checking_termination = false;
+        }
+    }
+
+    fn process_message(&mut self) {
+        let any_process = self.communicator.any_process();
+
+        while let Some(status) = any_process.immediate_probe() {
+            let source_rank = status.source_rank();
+            let tag = status.tag();
+
+            match tag {
+                Self::TAG_NODE => self.receive_node(source_rank),
+                Self::TAG_TIME_OUT => self.receive_time_out(source_rank),
+                Self::TAG_TIME_OUT_ACK => self.receive_time_out_ack(source_rank),
+                Self::TAG_TERMINATION_DETECTION => self.receive_termination_detection(source_rank),
+                Self::TAG_TERMINATE => self.receive_terminate(source_rank),
+                _ => self.search.receive_message(source_rank, tag),
+            }
+        }
+    }
+
+    fn pop_node_and_depth(&mut self) -> Option<(Rc<N>, usize)> {
+        None
+    }
+
+    fn compute_local_dual_bound(&self) -> Option<T> {
+        if N::ordered_by_bound() {
+            self.layered_beams.get_local_dual_bound()
+        } else {
+            None
+        }
+    }
+
+    pub fn search(&mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
+        let mut keep_buffer = vec![];
+        let mut send_buffer = vec![];
+
+        loop {
+            self.process_message();
+
+            if self.is_terminated {
+                break;
+            }
+
+            if self.communicator.rank() == self.search.get_root_rank() {
+                if !self.is_time_out && self.search.check_time_limit() {
+                    self.is_time_out = true;
+                    self.local_dual_bound = self.compute_local_dual_bound();
+                    self.broadcast_time_out();
+                }
+
+                if self.is_time_out
+                    && self.n_remaining_time_out_ack == 0
+                    && !self.is_checking_termination
+                {
+                    self.is_checking_termination = true;
+                    let destination_rank =
+                        (self.communicator.rank() + 1) % self.communicator.size();
+                    self.node_communicator
+                        .initiate_termination(destination_rank);
+                }
+            }
+
+            if self.is_time_out {
+                continue;
+            }
+
+            if let Some((node, depth)) = self.pop_node_and_depth() {
+                let registry = self.layered_beams.get_registry_mut(depth + 1);
+                self.search
+                    .expand(node, registry, &mut keep_buffer, &mut send_buffer);
+
+                for (destination_rank, successor) in send_buffer.drain(..) {
+                    self.node_communicator
+                        .send(destination_rank, &successor, depth + 1);
+                }
+
+                for successor in keep_buffer.drain(..) {
+                    self.layered_beams.insert(successor, depth + 1);
+                }
+            } else if self.communicator.rank() == self.search.get_root_rank()
+                && !self.is_checking_termination
+            {
+                self.is_checking_termination = true;
+                let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
+                self.node_communicator
+                    .initiate_termination(destination_rank);
+            }
+        }
+
+        self.communicator.barrier();
+
+        let (mut solution, statistics) = self.search.finalize(self.local_dual_bound);
+
+        if self.is_time_out {
+            solution.time_out = true;
+            solution.is_optimal = false;
+            solution.is_infeasible = false;
+        } else {
+            solution.is_optimal = solution.cost.is_some();
+            solution.is_infeasible = solution.cost.is_none();
+
+            if solution.is_optimal {
+                solution.best_bound = solution.cost;
+            }
+        }
+
+        if !solution.is_optimal && solution.cost.is_some() && solution.cost == solution.best_bound {
+            solution.is_optimal = true;
+        }
+
+        solution.time = self.search.elapsed_time();
+
+        (solution, statistics)
+    }
+
+    pub fn gather_bound_to_expanded(&self) -> Vec<KeyValueStatistics<T, usize>> {
+        self.search.gather_bound_to_expanded()
+    }
 }

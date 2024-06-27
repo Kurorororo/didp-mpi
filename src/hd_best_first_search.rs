@@ -35,6 +35,7 @@ where
     communicator: &'a SimpleCommunicator,
     node_communicator: TimeStampedNodeCommunicator<'a, SimpleCommunicator, M, T>,
     open: BinaryHeap<Rc<N>>,
+    registry: StateRegistry<T, N>,
     local_dual_bound: Option<T>,
     is_time_out: bool,
     n_remaining_time_out_ack: usize,
@@ -86,7 +87,7 @@ where
         communicator: &'a SimpleCommunicator,
     ) -> HdBestFirstSearch<'a, T, N, M, L, R, B, F, V> {
         let model = input.generator.model.clone();
-
+        let capacity = parameters.parameters.initial_registry_capacity;
         let mut search = MpiAnytimeSearch::new(
             input.generator,
             input.solution_suffix,
@@ -104,8 +105,13 @@ where
         );
 
         let mut open = BinaryHeap::new();
+        let mut registry = StateRegistry::new(model.clone());
 
-        if let Some(node) = search.generate_root_node(input.node) {
+        if let Some(capacity) = capacity {
+            registry.reserve(capacity);
+        }
+
+        if let Some(node) = search.generate_root_node(input.node, &mut registry) {
             open.push(node);
         }
 
@@ -115,6 +121,7 @@ where
             communicator,
             node_communicator,
             open,
+            registry,
             local_dual_bound: None,
             is_time_out: false,
             n_remaining_time_out_ack: 0,
@@ -141,7 +148,7 @@ where
         {
             let node = N::from(node);
 
-            if let Some(node) = self.search.open_node(node) {
+            if let Some(node) = self.search.open_node(node, &mut self.registry) {
                 self.open.push(node);
             }
         }
@@ -294,7 +301,8 @@ where
                     }
                 }
 
-                self.search.expand(node, &mut keep_buffer, &mut send_buffer);
+                self.search
+                    .expand(node, &mut self.registry, &mut keep_buffer, &mut send_buffer);
 
                 for (destination_rank, successor) in send_buffer.drain(..) {
                     self.node_communicator.send(destination_rank, &successor);

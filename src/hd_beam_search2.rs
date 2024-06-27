@@ -5,14 +5,18 @@ use dypdl_heuristic_search::search_algorithm::{
     util::TimeKeeper,
     BeamSearchParameters, SearchInput, Solution, StateRegistry, TransitionWithId,
 };
-use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
+use mpi::{
+    datatype::{SystemDatatype, UserDatatype},
+    topology::SimpleCommunicator,
+    traits::*,
+    Address, Rank, Tag,
+};
 use std::fmt::Display;
 use std::mem;
 use std::rc::Rc;
 
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
 use crate::is_float::IsFloat;
-use crate::local_layer_message::LocalLayerMessage;
 use crate::node_communicator::NodeCommunicator;
 use crate::node_message::NodeMessage;
 use crate::partial_solution::PartialSolutionTags;
@@ -99,6 +103,117 @@ where
 
     fn receive(&mut self, source_rank: Rank, primal_bound: Option<T>) -> Option<M> {
         self.communicator.receive(source_rank, primal_bound)
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct LocalLayerMessage<T> {
+    pruned: bool,
+    is_empty: bool,
+    time_out: bool,
+    bound: Option<T>,
+    cost: Option<T>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+struct LocalLayerMessageForSend<T>([bool; 5], [T; 2]);
+
+unsafe impl<T> Equivalence for LocalLayerMessageForSend<T>
+where
+    T: Equivalence<Out = SystemDatatype>,
+{
+    type Out = UserDatatype;
+
+    fn equivalent_datatype() -> Self::Out {
+        UserDatatype::structured(
+            &[5, 2],
+            &[
+                memoffset::offset_of!(LocalLayerMessageForSend<T>, 0) as Address,
+                memoffset::offset_of!(LocalLayerMessageForSend<T>, 1) as Address,
+            ],
+            &[bool::equivalent_datatype(), T::equivalent_datatype()],
+        )
+    }
+}
+
+impl<T, U> From<LocalLayerMessage<T>> for LocalLayerMessageForSend<U>
+where
+    T: Numeric,
+    U: Numeric,
+{
+    fn from(message: LocalLayerMessage<T>) -> Self {
+        let bound = message
+            .bound
+            .map_or_else(|| U::default(), |bound| U::from(bound));
+        let cost = message
+            .cost
+            .map_or_else(|| U::default(), |cost| U::from(cost));
+
+        Self(
+            [
+                message.pruned,
+                message.is_empty,
+                message.time_out,
+                message.bound.is_some(),
+                message.cost.is_some(),
+            ],
+            [bound, cost],
+        )
+    }
+}
+
+impl<T, U> From<LocalLayerMessageForSend<T>> for LocalLayerMessage<U>
+where
+    T: Numeric,
+    U: Numeric,
+{
+    fn from(message: LocalLayerMessageForSend<T>) -> Self {
+        let bound = if message.0[3] {
+            Some(U::from(message.1[0]))
+        } else {
+            None
+        };
+        let cost = if message.0[4] {
+            Some(U::from(message.1[1]))
+        } else {
+            None
+        };
+
+        Self {
+            pruned: message.0[0],
+            is_empty: message.0[1],
+            time_out: message.0[2],
+            bound,
+            cost,
+        }
+    }
+}
+
+impl<T: IsFloat> LocalLayerMessage<T> {
+    pub fn send<C: Communicator>(&self, communicator: &C, destination_rank: Rank, tag: Tag) {
+        let destination = communicator.process_at_rank(destination_rank);
+
+        if T::is_float() {
+            let message = LocalLayerMessageForSend::<Continuous>::from(self.clone());
+            destination.buffered_send_with_tag(&message, tag);
+        } else {
+            let message = LocalLayerMessageForSend::<Integer>::from(self.clone());
+            destination.buffered_send_with_tag(&message, tag);
+        }
+    }
+
+    pub fn receive<C: Communicator>(communicator: &C, source_rank: Rank, tag: Tag) -> Self {
+        let source = communicator.process_at_rank(source_rank);
+
+        if T::is_float() {
+            let mut message = LocalLayerMessageForSend::<Continuous>::default();
+            source.receive_into_with_tag(&mut message, tag);
+            Self::from(message)
+        } else {
+            let mut message = LocalLayerMessageForSend::<Integer>::default();
+            source.receive_into_with_tag(&mut message, tag);
+            Self::from(message)
+        }
     }
 }
 
