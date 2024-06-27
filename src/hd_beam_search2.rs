@@ -5,26 +5,18 @@ use dypdl_heuristic_search::search_algorithm::{
     util::TimeKeeper,
     BeamSearchParameters, SearchInput, Solution, StateRegistry, TransitionWithId,
 };
-use mpi::{
-    datatype::{SystemDatatype, UserDatatype},
-    topology::SimpleCommunicator,
-    traits::*,
-    Address, Rank, Tag,
-};
+use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
 use std::fmt::Display;
 use std::mem;
 use std::rc::Rc;
 
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
-use crate::distributed_id_chain::{
-    DistributedTransitionIdChain, GeRctDistributedTransitionIdChain,
-};
 use crate::is_float::IsFloat;
+use crate::local_layer_message::LocalLayerMessage;
 use crate::node_communicator::NodeCommunicator;
 use crate::node_message::NodeMessage;
-use crate::partial_solution::{
-    receive_partial_solution, send_partial_solution, PartialSolutionTags,
-};
+use crate::partial_solution::PartialSolutionTags;
+use crate::retrieve_solution::{self, RetrieveSolutionTags};
 use crate::statistics::Statistics;
 
 const TAG_NODE: Tag = 0;
@@ -34,12 +26,16 @@ const TAG_PARTIAL_SOLUTION_REQUEST: Tag = 3;
 const TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA: Tag = 4;
 const TAG_PARTIAL_SOLUTION_TRANSITION_IDS: Tag = 5;
 const TAG_PARTIAL_SOLUTION_TRANSITION_FORCED: Tag = 6;
-const TAG_PARTIAL_SOLUTION: PartialSolutionTags = PartialSolutionTags {
-    fixed_length_data: TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA,
-    transition_ids: TAG_PARTIAL_SOLUTION_TRANSITION_IDS,
-    transition_forced: TAG_PARTIAL_SOLUTION_TRANSITION_FORCED,
-};
 const TAG_PARTIAL_SOLUTION_FINISHED: Tag = 7;
+const TAG_RETRIEVE_SOLUTION: RetrieveSolutionTags = RetrieveSolutionTags {
+    tag_partial_solution_request: TAG_PARTIAL_SOLUTION_REQUEST,
+    tag_partial_solution: PartialSolutionTags {
+        fixed_length_data: TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA,
+        transition_ids: TAG_PARTIAL_SOLUTION_TRANSITION_IDS,
+        transition_forced: TAG_PARTIAL_SOLUTION_TRANSITION_FORCED,
+    },
+    tag_partial_solution_finished: TAG_PARTIAL_SOLUTION_FINISHED,
+};
 
 struct BufferedNodeCommunicator<'a, C, M, T> {
     communicator: NodeCommunicator<'a, C, M, T>,
@@ -103,220 +99,6 @@ where
 
     fn receive(&mut self, source_rank: Rank, primal_bound: Option<T>) -> Option<M> {
         self.communicator.receive(source_rank, primal_bound)
-    }
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-struct LocalLayerMessage<T> {
-    pruned: bool,
-    is_empty: bool,
-    time_out: bool,
-    bound: Option<T>,
-    cost: Option<T>,
-}
-
-#[derive(Clone, Debug, Default, PartialEq)]
-struct LocalLayerMessageForSend<T>([bool; 5], [T; 2]);
-
-unsafe impl<T> Equivalence for LocalLayerMessageForSend<T>
-where
-    T: Equivalence<Out = SystemDatatype>,
-{
-    type Out = UserDatatype;
-
-    fn equivalent_datatype() -> Self::Out {
-        UserDatatype::structured(
-            &[5, 2],
-            &[
-                memoffset::offset_of!(LocalLayerMessageForSend<T>, 0) as Address,
-                memoffset::offset_of!(LocalLayerMessageForSend<T>, 1) as Address,
-            ],
-            &[bool::equivalent_datatype(), T::equivalent_datatype()],
-        )
-    }
-}
-
-impl<T, U> From<LocalLayerMessage<T>> for LocalLayerMessageForSend<U>
-where
-    T: Numeric,
-    U: Numeric,
-{
-    fn from(message: LocalLayerMessage<T>) -> Self {
-        let bound = message
-            .bound
-            .map_or_else(|| U::default(), |bound| U::from(bound));
-        let cost = message
-            .cost
-            .map_or_else(|| U::default(), |cost| U::from(cost));
-
-        Self(
-            [
-                message.pruned,
-                message.is_empty,
-                message.time_out,
-                message.bound.is_some(),
-                message.cost.is_some(),
-            ],
-            [bound, cost],
-        )
-    }
-}
-
-impl<T, U> From<LocalLayerMessageForSend<T>> for LocalLayerMessage<U>
-where
-    T: Numeric,
-    U: Numeric,
-{
-    fn from(message: LocalLayerMessageForSend<T>) -> Self {
-        let bound = if message.0[3] {
-            Some(U::from(message.1[0]))
-        } else {
-            None
-        };
-        let cost = if message.0[4] {
-            Some(U::from(message.1[1]))
-        } else {
-            None
-        };
-
-        Self {
-            pruned: message.0[0],
-            is_empty: message.0[1],
-            time_out: message.0[2],
-            bound,
-            cost,
-        }
-    }
-}
-
-impl<T: IsFloat> LocalLayerMessage<T> {
-    fn send<C: Communicator>(&self, communicator: &C, destination_rank: Rank, tag: Tag) {
-        let destination = communicator.process_at_rank(destination_rank);
-
-        if T::is_float() {
-            let message = LocalLayerMessageForSend::<Continuous>::from(self.clone());
-            destination.buffered_send_with_tag(&message, tag);
-        } else {
-            let message = LocalLayerMessageForSend::<Integer>::from(self.clone());
-            destination.buffered_send_with_tag(&message, tag);
-        }
-    }
-
-    fn receive<C: Communicator>(communicator: &C, source_rank: Rank, tag: Tag) -> Self {
-        let source = communicator.process_at_rank(source_rank);
-
-        if T::is_float() {
-            let mut message = LocalLayerMessageForSend::<Continuous>::default();
-            source.receive_into_with_tag(&mut message, tag);
-            Self::from(message)
-        } else {
-            let mut message = LocalLayerMessageForSend::<Integer>::default();
-            source.receive_into_with_tag(&mut message, tag);
-            Self::from(message)
-        }
-    }
-}
-
-fn retrieve_solution<C, N, V>(
-    communicator: &C,
-    id_to_chain_node: &[Rc<DistributedTransitionIdChain>],
-    node: &N,
-    suffix: &[TransitionWithId<V>],
-    forced_transitions: &[Rc<TransitionWithId<V>>],
-    transitions: &[Rc<TransitionWithId<V>>],
-) -> Vec<TransitionWithId<V>>
-where
-    C: Communicator,
-    N: GeRctDistributedTransitionIdChain,
-    V: TransitionInterface + Clone,
-{
-    let chain = node.get_rc_distributed_transition_id_chain();
-    let (mut transition_ids, mut transition_forced, mut parent) =
-        chain.get_transition_ids_in_this_rank(id_to_chain_node);
-
-    while let Some((parent_rank, parent_id)) = parent {
-        if parent_rank == communicator.rank() {
-            let chain = &id_to_chain_node[parent_id];
-            let (tmp_transition_ids, tmp_transition_forced, tmp_parent) =
-                chain.get_transition_ids_in_this_rank(id_to_chain_node);
-            transition_ids.extend(tmp_transition_ids);
-            transition_forced.extend(tmp_transition_forced);
-            parent = tmp_parent;
-        } else {
-            let destination_process = communicator.process_at_rank(parent_rank);
-            destination_process.buffered_send_with_tag(&parent_id, TAG_PARTIAL_SOLUTION_REQUEST);
-
-            parent = receive_partial_solution(
-                &destination_process,
-                &mut transition_ids,
-                &mut transition_forced,
-                &TAG_PARTIAL_SOLUTION,
-            );
-        }
-    }
-
-    for destination_rank in 0..communicator.size() {
-        if destination_rank != communicator.rank() {
-            let buf: [u8; 0] = [];
-            let destination_process = communicator.process_at_rank(destination_rank);
-            destination_process.buffered_send_with_tag(&buf, TAG_PARTIAL_SOLUTION_FINISHED);
-        }
-    }
-
-    let mut solution = transition_ids
-        .iter()
-        .zip(transition_forced.iter())
-        .rev()
-        .map(|(id, forced)| {
-            if *forced {
-                forced_transitions[*id].as_ref().clone()
-            } else {
-                transitions[*id].as_ref().clone()
-            }
-        })
-        .collect::<Vec<_>>();
-
-    solution.extend_from_slice(suffix);
-
-    solution
-}
-
-fn wait_retrieve_solution<C>(
-    communicator: &C,
-    id_to_chain_node: &[Rc<DistributedTransitionIdChain>],
-) where
-    C: Communicator,
-{
-    loop {
-        let any_process = communicator.any_process();
-
-        if let Some(status) = any_process.immediate_probe_with_tag(TAG_PARTIAL_SOLUTION_REQUEST) {
-            let rank = status.source_rank();
-            let mut chain_id = 0;
-            let source_process = communicator.process_at_rank(rank);
-            source_process.receive_into_with_tag(&mut chain_id, TAG_PARTIAL_SOLUTION_REQUEST);
-
-            let chain = &id_to_chain_node[chain_id];
-            let (transition_ids, transition_forced, parent) =
-                chain.get_transition_ids_in_this_rank(id_to_chain_node);
-            send_partial_solution(
-                &source_process,
-                &transition_ids,
-                &transition_forced,
-                parent,
-                &TAG_PARTIAL_SOLUTION,
-            )
-        }
-
-        if let Some(status) = communicator
-            .any_process()
-            .immediate_probe_with_tag(TAG_PARTIAL_SOLUTION_FINISHED)
-        {
-            let mut buf: [u8; 0] = [];
-            let source_process = communicator.process_at_rank(status.source_rank());
-            source_process.receive_into_with_tag(&mut buf, TAG_PARTIAL_SOLUTION_FINISHED);
-            return;
-        }
     }
 }
 
@@ -781,17 +563,22 @@ where
 
                 if goal_rank == this_rank {
                     let (node, cost, suffix) = incumbent.unwrap();
-                    solution.transitions = retrieve_solution(
+                    solution.transitions = retrieve_solution::retrieve_solution(
                         communicator,
                         &id_to_chain_node,
                         node.as_ref(),
                         suffix,
                         &generator.forced_transitions,
                         &generator.transitions,
+                        &TAG_RETRIEVE_SOLUTION,
                     );
                     solution.cost = Some(cost);
                 } else {
-                    wait_retrieve_solution(communicator, &id_to_chain_node);
+                    retrieve_solution::wait_retrieve_solution(
+                        communicator,
+                        &id_to_chain_node,
+                        &TAG_RETRIEVE_SOLUTION,
+                    );
                 }
             }
 
