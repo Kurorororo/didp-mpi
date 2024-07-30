@@ -252,6 +252,11 @@ where
             .send(&mut self.tmp_buffer, destination_rank);
     }
 
+    pub fn get_depth(&self) -> usize {
+        usize::read_from(&self.tmp_buffer[self.offset..self.offset + mem::size_of::<usize>()])
+            .unwrap()
+    }
+
     pub fn receive(&mut self, source_rank: Rank, primal_bound: Option<T>) -> Option<(M, usize)> {
         self.communicator
             .receive_into(&mut self.tmp_buffer, source_rank);
@@ -265,9 +270,7 @@ where
         }
 
         let node = M::deserialize(&self.state_serializer, &self.tmp_buffer);
-        let depth =
-            usize::read_from(&self.tmp_buffer[self.offset..self.offset + mem::size_of::<usize>()])
-                .unwrap();
+        let depth = self.get_depth();
 
         Some((node, depth))
     }

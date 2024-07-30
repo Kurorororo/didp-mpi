@@ -4,8 +4,236 @@ use dypdl_heuristic_search::search_algorithm::{
     data_structure::{self, StateInformation},
     StateRegistry,
 };
-use std::rc::Rc;
-use std::{collections::BinaryHeap, fmt::Display};
+use std::{
+    collections::{BinaryHeap, VecDeque},
+    fmt::Display,
+    marker::PhantomData,
+    rc::Rc,
+};
+
+struct Layered<T> {
+    deque: VecDeque<T>,
+    minimum_depth: usize,
+}
+
+impl<T> Layered<T> {
+    pub fn new(value: T) -> Self {
+        Self {
+            deque: VecDeque::from([value]),
+            minimum_depth: 0,
+        }
+    }
+
+    pub fn includes(&self, depth: usize) -> bool {
+        depth >= self.minimum_depth && depth < self.minimum_depth + self.deque.len()
+    }
+
+    pub fn get(&self, depth: usize) -> Option<&T> {
+        if !self.includes(depth) {
+            return None;
+        }
+
+        self.deque.get(depth - self.minimum_depth)
+    }
+
+    pub fn get_mut(&mut self, depth: usize) -> Option<&mut T> {
+        if !self.includes(depth) {
+            return None;
+        }
+
+        self.deque.get_mut(depth - self.minimum_depth)
+    }
+
+    pub fn push<F>(&mut self, depth: usize, default: F)
+    where
+        F: Fn() -> T,
+    {
+        while self.minimum_depth + self.deque.len() < depth {
+            self.deque.push_back(default());
+        }
+    }
+
+    pub fn pop<F>(&mut self, depth: usize, mut callback: F)
+    where
+        F: FnMut(&mut T),
+    {
+        while self.minimum_depth <= depth {
+            if let Some(mut front) = self.deque.pop_front() {
+                callback(&mut front);
+            }
+
+            self.minimum_depth += 1;
+        }
+    }
+}
+
+pub struct LayeredCounters(Layered<i32>);
+
+impl Default for LayeredCounters {
+    fn default() -> Self {
+        Self(Layered::new(0))
+    }
+}
+
+impl LayeredCounters {
+    pub fn increase(&mut self, depth: usize, value: i32) {
+        self.0.push(depth, || 0);
+        let counter = self.0.get_mut(depth).unwrap();
+        *counter += value;
+    }
+
+    pub fn increment(&mut self, depth: usize) {
+        self.increase(depth, 1)
+    }
+
+    pub fn decrease(&mut self, depth: usize, value: i32) {
+        self.increase(depth, -value)
+    }
+
+    pub fn decrement(&mut self, depth: usize) {
+        self.increase(depth, -1)
+    }
+
+    pub fn clear(&mut self, depth: usize) {
+        self.0.pop(depth, |_| {});
+    }
+}
+
+pub struct LayeredNestedCounters {
+    dimensions: usize,
+    counters: Layered<Vec<i32>>,
+}
+
+impl LayeredNestedCounters {
+    pub fn new(dimensions: usize) -> Self {
+        Self {
+            dimensions,
+            counters: Layered::new(vec![0; dimensions]),
+        }
+    }
+
+    pub fn increase(&mut self, depth: usize, index: usize, value: i32) {
+        self.counters.push(depth, || vec![0; self.dimensions]);
+        let counter = self.counters.get_mut(depth).unwrap();
+        counter[index] += value;
+    }
+
+    pub fn increment(&mut self, depth: usize, index: usize) {
+        self.increase(depth, index, 1)
+    }
+
+    pub fn decrease(&mut self, depth: usize, index: usize, value: i32) {
+        self.increase(depth, index, -value)
+    }
+
+    pub fn decrement(&mut self, depth: usize, index: usize) {
+        self.increase(depth, index, -1)
+    }
+
+    pub fn clear(&mut self, depth: usize) {
+        self.counters.pop(depth, |_| {});
+    }
+}
+
+pub struct LayeredRegistries<T, N>
+where
+    T: Numeric,
+    N: StateInformation<T>,
+{
+    model: Rc<Model>,
+    registries: Layered<StateRegistry<T, N>>,
+}
+
+impl<T, N> LayeredRegistries<T, N>
+where
+    T: Numeric,
+    N: StateInformation<T>,
+{
+    pub fn new(model: Rc<Model>) -> Self {
+        Self {
+            model: model.clone(),
+            registries: Layered::new(StateRegistry::new(model)),
+        }
+    }
+
+    pub fn get_mut(&mut self, depth: usize) -> &mut StateRegistry<T, N> {
+        self.registries
+            .push(depth, || StateRegistry::new(self.model.clone()));
+        self.registries.get_mut(depth).unwrap()
+    }
+
+    pub fn clear(&mut self, depth: usize) {
+        self.registries.pop(depth, |_| {});
+    }
+}
+
+struct BeamLayer<T, N> {
+    n_remaining: usize,
+    open: BinaryHeap<Rc<N>>,
+    generated_all: bool,
+    phantom_: PhantomData<T>,
+}
+
+impl<T, N> BeamLayer<T, N>
+where
+    T: Numeric + Display,
+    N: BfsNodeWithDistributedIdChain<T>,
+{
+    pub fn new(width: usize) -> Self {
+        Self {
+            n_remaining: width,
+            open: BinaryHeap::new(),
+            generated_all: false,
+            phantom_: PhantomData,
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.open.is_empty()
+    }
+
+    pub fn push(&mut self, node: Rc<N>) {
+        self.open.push(node);
+    }
+
+    fn clean_garbage(&mut self) {
+        while let Some(peak) = self.open.peek() {
+            if peak.is_closed() {
+                self.open.pop();
+            } else {
+                break;
+            }
+        }
+    }
+
+    pub fn pop(&mut self, model: &Model, primal_bound: Option<T>) -> Option<Rc<N>> {
+        if self.n_remaining == 0 {
+            return None;
+        }
+
+        while let Some(node) = self.open.pop() {
+            if node.bound(model).map_or(false, |bound| {
+                data_structure::exceed_bound(model, bound, primal_bound)
+            }) {
+                if N::ordered_by_bound() {
+                    self.open.clear();
+
+                    return None;
+                }
+
+                self.clean_garbage();
+                continue;
+            }
+
+            self.clean_garbage();
+            self.n_remaining -= 1;
+
+            return Some(node);
+        }
+
+        None
+    }
+}
 
 pub struct LayeredBeams<T, N>
 where
@@ -40,7 +268,7 @@ where
             beam_size,
             current_minimum_depth: 0,
             depth_to_popped: vec![],
-            depth_to_generated_all: vec![],
+            depth_to_generated_all: vec![true],
             depth_to_open: vec![],
             depth_to_registry: vec![],
             is_pruned: false,
@@ -70,18 +298,45 @@ where
         self.is_pruned
     }
 
-    pub fn set_complete(&mut self, depth: usize) {
+    pub fn notify_generated_all(&mut self, depth: usize) {
         self.depth_to_generated_all[depth] = true;
     }
 
-    pub fn is_empty(&self) -> bool {
-        for open in self.depth_to_open[self.current_minimum_depth..].iter() {
-            if !open.as_ref().unwrap().is_empty() {
-                return false;
+    pub fn clear_minimum_depth(&mut self) {
+        let open = self.depth_to_open[self.current_minimum_depth]
+            .take()
+            .unwrap();
+        self.depth_to_registry[self.current_minimum_depth].take();
+
+        if N::ordered_by_bound() {
+            if let Some(bound) = open.peek().and_then(|peek| peek.bound(&self.model)) {
+                self.update_best_discarded_bound(bound);
             }
         }
 
-        true
+        if !self.is_pruned
+            && (!self.depth_to_generated_all[self.current_minimum_depth] || !open.is_empty())
+        {
+            self.is_pruned = true;
+        }
+
+        self.current_minimum_depth += 1;
+    }
+
+    pub fn cannot_terminate(&self) -> bool {
+        for open in self.depth_to_open[self.current_minimum_depth..].iter() {
+            if !open.as_ref().unwrap().is_empty() {
+                return true;
+            }
+        }
+
+        for generated_all in self.depth_to_generated_all.iter().rev() {
+            if !*generated_all {
+                return true;
+            }
+        }
+
+        false
     }
 
     fn clean_garbage(open: &mut BinaryHeap<Rc<N>>) {
@@ -95,7 +350,7 @@ where
     }
 
     pub fn get_registry_mut(&mut self, depth: usize) -> &mut StateRegistry<T, N> {
-        while self.depth_to_open.len() < depth + 1 {
+        while self.depth_to_registry.len() < depth + 1 {
             self.depth_to_open.push(Some(BinaryHeap::new()));
             self.depth_to_registry
                 .push(Some(StateRegistry::new(self.model.clone())));
@@ -169,28 +424,6 @@ where
                 let is_last = self.depth_to_popped[depth] == self.beam_size
                     || (is_empty && self.depth_to_generated_all[depth]);
 
-                if is_last {
-                    for d in self.current_minimum_depth..=depth {
-                        let open = self.depth_to_open[d].take().unwrap();
-                        self.depth_to_registry[d].take();
-
-                        if N::ordered_by_bound() {
-                            if let Some(bound) =
-                                open.peek().and_then(|peek| peek.bound(&self.model))
-                            {
-                                self.update_best_discarded_bound(bound);
-                            }
-                        }
-
-                        if !self.is_pruned && (!self.depth_to_generated_all[d] || !open.is_empty())
-                        {
-                            self.is_pruned = true;
-                        }
-                    }
-
-                    self.current_minimum_depth = depth + 1;
-                }
-
                 return Some(PopResult {
                     node,
                     depth,
@@ -220,7 +453,7 @@ impl LayeredPerRankCounters {
         }
     }
 
-    pub fn get_counter(&mut self, depth: usize) -> &mut [i32] {
+    fn get_counter(&mut self, depth: usize) -> &mut [i32] {
         while self.counters.len() <= depth {
             self.counters.push(Some(vec![]));
         }
@@ -252,15 +485,7 @@ impl LayeredPerRankCounters {
         self.counters[depth].as_ref().unwrap()[rank]
     }
 
-    pub fn get_minimum_depth(&self) -> usize {
-        self.minimum_depth
-    }
-
-    pub fn clear_to_depth(&mut self, depth: usize) {
-        for counters in &mut self.counters[self.minimum_depth..=depth] {
-            *counters = None;
-        }
-
-        self.minimum_depth = depth + 1;
+    pub fn clear_depth(&mut self, depth: usize) {
+        self.counters[depth] = None
     }
 }

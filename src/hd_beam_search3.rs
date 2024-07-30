@@ -1,16 +1,20 @@
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::search_algorithm::{
-    data_structure::{self, HashableSignatureVariables, StateWithHashableSignatureVariables},
+    data_structure::{HashableSignatureVariables, StateWithHashableSignatureVariables},
     SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId,
 };
 use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
-use std::collections::BinaryHeap;
-use std::fmt::{Debug, Display};
 use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
+use std::{
+    fmt::{Debug, Display},
+    vec,
+};
 
+use crate::layered_beams::{LayeredBeams, LayeredPerRankCounters};
+use crate::node_communicator::TimeStampedNodeDepthCommunicator;
 use crate::{
     bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
 };
@@ -21,11 +25,6 @@ use crate::{
         MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters,
     },
 };
-use crate::{
-    initiation,
-    layered_beams::{self, LayeredBeams},
-};
-use crate::{node_communicator::TimeStampedNodeDepthCommunicator, InitiationResult};
 use crate::{node_message::NodeMessage, statistics::Statistics};
 
 pub struct Hdbs3<'a, T, N, M, L, R, B, F, V = Transition>
@@ -40,6 +39,9 @@ where
     node_communicator: TimeStampedNodeDepthCommunicator<'a, SimpleCommunicator, M, T>,
     beam_size: usize,
     layered_beams: LayeredBeams<T, N>,
+    rank_to_n_sent: LayeredPerRankCounters,
+    rank_to_counters: LayeredPerRankCounters,
+    depth_to_received_all: Vec<i32>,
     local_dual_bound: Option<T>,
     is_time_out: bool,
     n_remaining_time_out_ack: usize,
@@ -80,7 +82,7 @@ where
     const TAG_N_INITIAL_OPEN_NODES: Tag =
         MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 1;
     const TAG_NODE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 2;
-    const TAG_SENT_ALL_NODES_IN_LAYER: Tag =
+    const TAG_ALL_NODES_SENT_IN_LAYER: Tag =
         MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 3;
     const TAG_TIME_OUT: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 4;
     const TAG_TIME_OUT_ACK: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 5;
@@ -119,6 +121,10 @@ where
 
         layered_beams.insert_with(node_generator, 0);
 
+        let rank_to_n_sent = LayeredPerRankCounters::new(communicator.size() as usize);
+        let rank_to_n_received = LayeredPerRankCounters::new(communicator.size() as usize);
+        let depth_to_received_all = vec![communicator.size()];
+
         Self {
             model,
             search,
@@ -126,6 +132,9 @@ where
             node_communicator,
             beam_size,
             layered_beams,
+            rank_to_n_sent,
+            rank_to_counters: rank_to_n_received,
+            depth_to_received_all,
             local_dual_bound: None,
             is_time_out: false,
             n_remaining_time_out_ack: 0,
@@ -137,6 +146,24 @@ where
     fn open_node(&mut self, node: N, depth: usize) {
         let node_generator = |registry: &mut _| self.search.open_node(node, registry);
         self.layered_beams.insert_with(node_generator, depth);
+    }
+
+    fn increment_received_all(&mut self, depth: usize) {
+        while self.depth_to_received_all.len() < depth + 1 {
+            self.depth_to_received_all.push(0);
+        }
+
+        self.depth_to_received_all[depth] += 1;
+    }
+
+    fn check_count(&mut self, source_rank: i32, depth: usize) {
+        if self.rank_to_counters.get_count(source_rank as usize, depth) == 0 {
+            self.increment_received_all(depth);
+
+            if self.depth_to_received_all[depth] == self.communicator.size() {
+                self.layered_beams.notify_generated_all(depth);
+            }
+        }
     }
 
     fn receive_node(&mut self, source_rank: Rank) {
@@ -158,6 +185,21 @@ where
             let node = N::from(node);
             self.open_node(node, depth);
         }
+
+        let depth = self.node_communicator.get_depth();
+        self.rank_to_counters.increment(source_rank as usize, depth);
+        self.check_count(source_rank, depth);
+    }
+
+    fn recieve_sent_all_nodes_in_layer(&mut self, source_rank: Rank) {
+        let mut buffer = [0; 2];
+        let source_process = self.communicator.process_at_rank(source_rank);
+        source_process.receive_into_with_tag(&mut buffer, Self::TAG_ALL_NODES_SENT_IN_LAYER);
+        let depth = buffer[0] as usize;
+        let n_sent = buffer[1];
+        self.rank_to_counters
+            .decrease(source_rank as usize, depth, n_sent);
+        self.check_count(source_rank, depth);
     }
 
     fn broadcast_time_out(&mut self) {
@@ -206,11 +248,17 @@ where
         self.is_terminated = true;
     }
 
+    fn cannot_terminate(&self) -> bool {
+        self.search.cannot_terminate()
+            || self.n_remaining_time_out_ack > 0
+            || (!self.is_time_out && self.layered_beams.cannot_terminate())
+    }
+
     fn receive_termination_detection(&mut self, source_rank: Rank) {
         let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
         let local_invalid = self.search.cannot_terminate()
             || self.n_remaining_time_out_ack > 0
-            || (!self.is_time_out && !self.layered_beams.is_empty());
+            || (!self.is_time_out && !self.layered_beams.cannot_terminate());
         let result = self
             .node_communicator
             .receive_termination_detection_and_forward(
@@ -237,6 +285,9 @@ where
 
             match tag {
                 Self::TAG_NODE => self.receive_node(source_rank),
+                Self::TAG_ALL_NODES_SENT_IN_LAYER => {
+                    self.recieve_sent_all_nodes_in_layer(source_rank)
+                }
                 Self::TAG_TIME_OUT => self.receive_time_out(source_rank),
                 Self::TAG_TIME_OUT_ACK => self.receive_time_out_ack(source_rank),
                 Self::TAG_TERMINATION_DETECTION => self.receive_termination_detection(source_rank),
@@ -292,7 +343,9 @@ where
                 continue;
             }
 
-            if let Some((node, depth)) = self.pop_node_and_depth() {
+            if let Some(result) = self.layered_beams.pop(self.search.get_primal_bound()) {
+                let node = result.node;
+                let depth = result.depth;
                 let registry = self.layered_beams.get_registry_mut(depth + 1);
                 self.search
                     .expand(node, registry, &mut keep_buffer, &mut send_buffer);
@@ -300,6 +353,36 @@ where
                 for (destination_rank, successor) in send_buffer.drain(..) {
                     self.node_communicator
                         .send(destination_rank, &successor, depth + 1);
+                    self.rank_to_n_sent
+                        .increment(destination_rank as usize, depth + 1);
+                }
+
+                if result.is_last {
+                    self.increment_received_all(depth + 1);
+
+                    while self.layered_beams.current_minimum_depth() <= depth + 1 {
+                        let d = self.layered_beams.current_minimum_depth();
+
+                        for destination_rank in 0..self.communicator.size() {
+                            if destination_rank != self.communicator.rank() {
+                                let destination =
+                                    self.communicator.process_at_rank(destination_rank);
+                                let n_sent =
+                                    self.rank_to_n_sent.get_count(destination_rank as usize, d);
+                                let buffer = [d as i32, n_sent];
+                                destination.buffered_send_with_tag(
+                                    &buffer,
+                                    Self::TAG_ALL_NODES_SENT_IN_LAYER,
+                                );
+                            }
+                        }
+
+                        self.rank_to_n_sent.clear_depth(d);
+
+                        if d < depth {
+                            self.layered_beams.clear_minimum_depth();
+                        }
+                    }
                 }
 
                 for successor in keep_buffer.drain(..) {
@@ -307,6 +390,7 @@ where
                 }
             } else if self.communicator.rank() == self.search.get_root_rank()
                 && !self.is_checking_termination
+                && !self.cannot_terminate()
             {
                 self.is_checking_termination = true;
                 let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
