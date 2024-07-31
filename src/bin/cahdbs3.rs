@@ -1,6 +1,6 @@
 use didp_mpi::{
-    AdditionalCommonParameters, HashType, HdLdBestFirstSearch, IsFloat, KeyValueStatistics,
-    MpiAnytimeSearchParameters, NodeMessage, Statistics,
+    AdditionalCommonParameters, HashType, Hdbs3, IsFloat, MpiAnytimeSearchParameters, NodeMessage,
+    Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -8,12 +8,16 @@ use dypdl::{
     variable_type::{Numeric, OrderedContinuous},
 };
 use dypdl_heuristic_search::{
-    search_algorithm::{data_structure::HashableSignatureVariables, util::TimeKeeper},
-    FEvaluatorType, Parameters,
+    search_algorithm::{
+        data_structure::HashableSignatureVariables, util::TimeKeeper, Cabs, SearchInput,
+    },
+    BeamSearchParameters, CabsParameters, FEvaluatorType, Search,
 };
 use mpi::{environment::Universe, traits::*};
 use std::fmt::{Debug, Display};
+use std::fs::OpenOptions;
 use std::hash::Hash;
+use std::io::Write;
 use std::str::FromStr;
 
 #[cfg(not(target_env = "msvc"))]
@@ -26,10 +30,9 @@ static GLOBAL: Jemalloc = Jemalloc;
 fn main_with_cost_type_and_hash_function<T, H>(
     universe: Universe,
     model: Model,
-    mut parameters: Parameters<T>,
+    mut parameters: CabsParameters<T>,
     f_evaluator_type: FEvaluatorType,
     hash_function: H,
-    count_bound_to_expanded: bool,
     time_keeper: &TimeKeeper,
 ) where
     T: Numeric + IsFloat + Ord + Display + Hash,
@@ -37,15 +40,15 @@ fn main_with_cost_type_and_hash_function<T, H>(
     CostToDump: From<T>,
     H: Fn(&HashableSignatureVariables) -> u64,
 {
-    let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evaluators(
+    let input = didp_mpi::make_input(
         model,
         f_evaluator_type,
-        parameters.primal_bound,
+        parameters.beam_search_parameters.parameters.primal_bound,
     );
 
     let communicator = universe.world();
 
-    if communicator.rank() == 0 && !parameters.quiet {
+    if communicator.rank() == 0 && !parameters.beam_search_parameters.parameters.quiet {
         if let Some(node) = &input.node {
             println!(
                 "Initial dual bound: {}",
@@ -54,53 +57,82 @@ fn main_with_cost_type_and_hash_function<T, H>(
         }
     }
 
-    let solution_filename = if communicator.rank() == 0 {
-        Some(String::from("solution.yaml"))
-    } else {
-        None
-    };
-    let history_filename = if communicator.rank() == 0 {
-        Some(String::from("history.csv"))
-    } else {
-        None
+    parameters.beam_search_parameters.parameters.quiet |= communicator.rank() != 0;
+
+    let mut statistics_list = vec![Statistics::default(); communicator.size() as usize];
+
+    let beam_search = |input: &SearchInput<_, _>, parameters: BeamSearchParameters<_>| {
+        let solution_filename = if communicator.rank() == 0 {
+            Some(String::from("solution.yaml"))
+        } else {
+            None
+        };
+        let history_filename = if communicator.rank() == 0 {
+            Some(String::from("history.csv"))
+        } else {
+            None
+        };
+
+        let beam_size = parameters.beam_size;
+        let parameters = MpiAnytimeSearchParameters {
+            controller_rank: 0,
+            solution_filename,
+            history_filename,
+            count_bound_to_expanded: false,
+            parameters: parameters.parameters,
+        };
+        let evaluators = didp_mpi::make_mpi_dual_bound_evaluators(
+            input.generator.model.clone(),
+            f_evaluator_type,
+        );
+
+        let mut solver = Hdbs3::new(
+            input,
+            evaluators,
+            parameters,
+            beam_size,
+            &hash_function,
+            &communicator,
+        );
+        let (solution, tmp_statistics) = solver.search();
+
+        statistics_list
+            .iter_mut()
+            .zip(tmp_statistics)
+            .for_each(|(s, t)| *s += t);
+
+        if communicator.rank() == 0 && solution.cost.is_some() {
+            didp_mpi::write_solution(&solution, "solution.yaml");
+
+            let mut file = OpenOptions::new().append(true).open("history.csv").unwrap();
+            let line = format!("{}, {}\n", solution.time, solution.cost.unwrap(),);
+            file.write_all(line.as_bytes()).unwrap();
+        }
+
+        solution
     };
 
-    parameters.quiet |= communicator.rank() != 0;
-    let parameters = MpiAnytimeSearchParameters {
-        controller_rank: 0,
-        solution_filename,
-        history_filename,
-        count_bound_to_expanded,
-        parameters,
-    };
+    parameters.beam_search_parameters.parameters.quiet |= communicator.rank() != 0;
 
     if communicator.rank() == 0 {
         println!("Time for initialization: {}s", time_keeper.elapsed_time());
     }
 
-    let mut solver =
-        HdLdBestFirstSearch::new(input, evaluators, parameters, hash_function, &communicator);
-    let (solution, statistics_list) = solver.search();
+    let mut solver = Cabs::<_, _, _, _>::new(input, beam_search, parameters);
+    let mut solution = solver.search().unwrap();
 
     if communicator.rank() == 0 {
+        solution.expanded = statistics_list.iter().map(|s| s.expanded).sum();
+        solution.generated = statistics_list.iter().map(|s| s.generated).sum();
         didp_mpi::dump_solution(&solution);
 
         println!(
             "Time to the final solution: {}s",
             time_keeper.elapsed_time()
         );
-        println!("Closed before sent: {}", solver.get_closed_before_sent());
 
         didp_mpi::dump_statistics(&statistics_list);
         Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
-    }
-
-    if count_bound_to_expanded {
-        let bound_to_expanded = solver.gather_bound_to_expanded();
-
-        if communicator.rank() == 0 {
-            KeyValueStatistics::dump_to_csv(&bound_to_expanded, "bound_to_expanded.csv").unwrap();
-        }
     }
 }
 
@@ -116,7 +148,7 @@ fn main_with_cost_type<T>(
 {
     let yaml = didp_mpi::read_config_yaml(config_filename);
     let map = yaml.as_hash().expect("Yaml file is not a hash");
-    let parameters = didp_mpi::load_parameters_from_map::<T>(map);
+    let parameters = didp_mpi::load_cabs_parameters_from_map::<T>(map);
     let additional_parameters = AdditionalCommonParameters::load_from_map(map);
 
     if let Some(buffer_size) = additional_parameters.buffer_size {
@@ -134,7 +166,6 @@ fn main_with_cost_type<T>(
                 parameters,
                 f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
                 time_keeper,
             );
         }
@@ -150,7 +181,6 @@ fn main_with_cost_type<T>(
                 parameters,
                 f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
                 time_keeper,
             );
         }
@@ -162,7 +192,6 @@ fn main_with_cost_type<T>(
                 parameters,
                 f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
                 time_keeper,
             );
         }
@@ -178,7 +207,6 @@ fn main_with_cost_type<T>(
                 parameters,
                 f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
                 time_keeper,
             );
         }
@@ -194,7 +222,6 @@ fn main_with_cost_type<T>(
                 parameters,
                 f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
                 time_keeper,
             );
         }
@@ -210,7 +237,6 @@ fn main_with_cost_type<T>(
                 parameters,
                 f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
                 time_keeper,
             );
         }
@@ -225,7 +251,6 @@ fn main_with_cost_type<T>(
                 parameters,
                 f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
                 time_keeper,
             );
         }
@@ -240,7 +265,6 @@ fn main_with_cost_type<T>(
                 parameters,
                 f_evaluator_type,
                 hash_function,
-                additional_parameters.count_bound_to_expanded,
                 time_keeper,
             );
         }

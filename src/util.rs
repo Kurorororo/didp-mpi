@@ -70,37 +70,16 @@ where
     (input, transition_evaluator, base_cost_evaluator)
 }
 
-pub fn make_input_and_mpi_dual_bound_evalautors<'a, T>(
+pub fn make_input<'a, T>(
     model: Model,
     f_evaluator_type: FEvaluatorType,
     primal_bound: Option<T>,
-) -> (
-    SearchInput<'a, DistributedFNodeMessage<T>, TransitionWithId, Rc<TransitionWithId>>,
-    MpiAnytimeSearchEvaluators<
-        impl FnMut(
-            StateInRegistry,
-            T,
-            &TransitionWithId,
-            &DistributedTransitionIdChain,
-            &mut StateRegistry<T, DistributedFNode<T>>,
-            Option<T>,
-        ) -> NodeGenerationResult<Rc<DistributedFNode<T>>>,
-        impl FnMut(
-            StateWithHashableSignatureVariables,
-            T,
-            &TransitionWithId,
-            &DistributedTransitionIdChain,
-            Option<T>,
-        ) -> Option<DistributedFNodeMessage<T>>,
-        impl FnMut(T, T) -> T,
-    >,
-)
+) -> SearchInput<'a, DistributedFNodeMessage<T>, TransitionWithId, Rc<TransitionWithId>>
 where
     T: Numeric + Ord,
 {
     let model = Rc::new(model);
     let generator = SuccessorGenerator::<TransitionWithId>::from_model(model.clone(), false);
-    let base_cost_evaluator = move |cost, base_cost| f_evaluator_type.eval(cost, base_cost);
     let cost = match f_evaluator_type {
         FEvaluatorType::Plus => T::zero(),
         FEvaluatorType::Product => T::one(),
@@ -120,11 +99,42 @@ where
         primal_bound,
     );
 
-    let input = SearchInput {
+    SearchInput {
         node,
         generator,
         solution_suffix: &[],
-    };
+    }
+}
+
+pub fn make_mpi_dual_bound_evaluators<T>(
+    model: Rc<Model>,
+    f_evaluator_type: FEvaluatorType,
+) -> MpiAnytimeSearchEvaluators<
+    impl FnMut(
+        StateInRegistry,
+        T,
+        &TransitionWithId,
+        &DistributedTransitionIdChain,
+        &mut StateRegistry<T, DistributedFNode<T>>,
+        Option<T>,
+    ) -> NodeGenerationResult<Rc<DistributedFNode<T>>>,
+    impl FnMut(
+        StateWithHashableSignatureVariables,
+        T,
+        &TransitionWithId,
+        &DistributedTransitionIdChain,
+        Option<T>,
+    ) -> Option<DistributedFNodeMessage<T>>,
+    impl FnMut(T, T) -> T,
+>
+where
+    T: Numeric + Ord,
+{
+    let base_cost_evaluator = move |cost, base_cost| f_evaluator_type.eval(cost, base_cost);
+    let h_model = model.clone();
+    let remote_h_evaluator = move |state: &_| h_model.eval_dual_bound(state);
+    let remote_f_evaluator = move |g, h, _: &_| f_evaluator_type.eval(g, h);
+
     let h_model = model.clone();
     let local_h_evaluator = move |state: &_| h_model.eval_dual_bound(state);
     let local_f_evaluator = move |g, h, _: &_| f_evaluator_type.eval(g, h);
@@ -160,11 +170,44 @@ where
         )
     };
 
-    let evaluators = MpiAnytimeSearchEvaluators {
+    MpiAnytimeSearchEvaluators {
         local_successor_evaluator,
         remote_successor_evaluator,
         base_cost_evaluator,
-    };
+    }
+}
+
+pub fn make_input_and_mpi_dual_bound_evaluators<'a, T>(
+    model: Model,
+    f_evaluator_type: FEvaluatorType,
+    primal_bound: Option<T>,
+) -> (
+    SearchInput<'a, DistributedFNodeMessage<T>, TransitionWithId, Rc<TransitionWithId>>,
+    MpiAnytimeSearchEvaluators<
+        impl FnMut(
+            StateInRegistry,
+            T,
+            &TransitionWithId,
+            &DistributedTransitionIdChain,
+            &mut StateRegistry<T, DistributedFNode<T>>,
+            Option<T>,
+        ) -> NodeGenerationResult<Rc<DistributedFNode<T>>>,
+        impl FnMut(
+            StateWithHashableSignatureVariables,
+            T,
+            &TransitionWithId,
+            &DistributedTransitionIdChain,
+            Option<T>,
+        ) -> Option<DistributedFNodeMessage<T>>,
+        impl FnMut(T, T) -> T,
+    >,
+)
+where
+    T: Numeric + Ord,
+{
+    let input = make_input(model, f_evaluator_type, primal_bound);
+    let evaluators =
+        make_mpi_dual_bound_evaluators(input.generator.model.clone(), f_evaluator_type);
 
     (input, evaluators)
 }

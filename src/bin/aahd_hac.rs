@@ -51,7 +51,7 @@ fn main_with_cost_type<T>(
 
     let f_evaluator_type = additional_parameters.f_evaluator_type;
 
-    let (mut input, mut evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evalautors(
+    let (mut input, mut evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evaluators(
         model,
         f_evaluator_type,
         parameters.primal_bound,

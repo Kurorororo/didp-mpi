@@ -17,12 +17,13 @@ mod initiation;
 mod io;
 mod is_float;
 mod key_value_statistics;
-mod layered_beams;
+mod layered;
 mod mpi_anytime_search;
 mod mpi_termination_detector;
 mod node_communicator;
 mod node_data_type;
 mod node_message;
+mod open_list;
 mod partial_solution;
 mod retrieve_solution;
 mod state_serializer;
@@ -49,6 +50,7 @@ pub use hash_functions::{
 pub use hd_acps::HdAcps;
 pub use hd_apps::HdApps;
 pub use hd_beam_search2::hd_beam_search2;
+pub use hd_beam_search3::Hdbs3;
 pub use hd_best_first_search::HdBestFirstSearch;
 pub use hd_hac::HdHac;
 pub use hd_ld_best_first_search::HdLdBestFirstSearch;
@@ -65,4 +67,7 @@ pub use key_value_statistics::KeyValueStatistics;
 pub use mpi_anytime_search::{MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters};
 pub use node_message::NodeMessage;
 pub use statistics::Statistics;
-pub use util::{make_input_and_dual_bound_evaluators, make_input_and_mpi_dual_bound_evalautors};
+pub use util::{
+    make_input, make_input_and_dual_bound_evaluators, make_input_and_mpi_dual_bound_evaluators,
+    make_mpi_dual_bound_evaluators,
+};

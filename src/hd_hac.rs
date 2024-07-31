@@ -1,7 +1,7 @@
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::search_algorithm::{
-    data_structure::{self, HashableSignatureVariables, StateWithHashableSignatureVariables},
+    data_structure::{HashableSignatureVariables, StateWithHashableSignatureVariables},
     SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId,
 };
 use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
@@ -11,7 +11,6 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::initiation;
 use crate::{
     bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
 };
@@ -22,6 +21,7 @@ use crate::{
         MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters,
     },
 };
+use crate::{initiation, open_list};
 use crate::{node_communicator::TimeStampedNodeDepthCommunicator, InitiationResult};
 use crate::{node_message::NodeMessage, statistics::Statistics};
 
@@ -383,58 +383,6 @@ where
         }
     }
 
-    fn pop_from_open(&mut self) -> Option<(Rc<N>, usize)> {
-        while let Some((node, depth)) = self.open.pop() {
-            if node.is_closed() {
-                continue;
-            }
-
-            node.close();
-
-            if node.bound(&self.model).map_or(false, |dual_bound| {
-                data_structure::exceed_bound(
-                    &self.model,
-                    dual_bound,
-                    self.search.get_primal_bound(),
-                )
-            }) {
-                if N::ordered_by_bound() {
-                    self.open.clear();
-                }
-            } else {
-                return Some((node, depth));
-            }
-        }
-
-        None
-    }
-
-    fn pop_from_layered_open(&mut self) -> Option<(Rc<N>, usize)> {
-        while let Some(node) = self.layered_open[self.current_depth].pop() {
-            if node.is_closed() {
-                continue;
-            }
-
-            node.close();
-
-            if node.bound(&self.model).map_or(false, |dual_bound| {
-                data_structure::exceed_bound(
-                    &self.model,
-                    dual_bound,
-                    self.search.get_primal_bound(),
-                )
-            }) {
-                if N::ordered_by_bound() {
-                    self.layered_open[self.current_depth].clear();
-                }
-            } else {
-                return Some((node, self.current_depth));
-            }
-        }
-
-        None
-    }
-
     fn pop_node_and_depth(&mut self) -> Option<(Rc<N>, usize)> {
         if self.is_layered_turn {
             if self.current_depth > self.layered_open.len() - 1 {
@@ -444,13 +392,17 @@ where
             let initial_depth = self.current_depth;
 
             loop {
-                let result = self.pop_from_layered_open();
+                let result = open_list::pop_from_open(
+                    &mut self.layered_open[self.current_depth],
+                    &self.model,
+                    self.search.get_primal_bound(),
+                );
                 self.current_depth += 1;
 
-                if result.is_some() {
+                if let Some(node) = result {
                     self.is_layered_turn = false;
 
-                    return result;
+                    return Some((node, self.current_depth - 1));
                 } else {
                     if self.current_depth > self.layered_open.len() - 1 {
                         self.current_depth = 0;
@@ -465,7 +417,11 @@ where
 
         self.is_layered_turn = true;
 
-        self.pop_from_open()
+        open_list::pop_from_open_with_depth(
+            &mut self.open,
+            &self.model,
+            self.search.get_primal_bound(),
+        )
     }
 
     fn compute_local_dual_bound(&self) -> Option<T> {

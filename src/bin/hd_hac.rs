@@ -37,7 +37,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     CostToDump: From<T>,
     H: Fn(&HashableSignatureVariables) -> u64,
 {
-    let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evalautors(
+    let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evaluators(
         model,
         f_evaluator_type,
         parameters.primal_bound,

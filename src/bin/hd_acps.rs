@@ -47,7 +47,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     let f_evaluator_type = apps_parameters.f_evaluator_type;
     let count_bound_to_expanded = apps_parameters.count_bound_to_expanded;
 
-    let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evalautors(
+    let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evaluators(
         model,
         f_evaluator_type,
         parameters.primal_bound,
