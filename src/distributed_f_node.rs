@@ -1,6 +1,6 @@
 use crate::bfs_node_with_distributed_id_chain::NodeGenerationResult;
 use crate::distributed_f_node_message::DistributedFNodeMessage;
-use crate::distributed_id_chain::GeRctDistributedTransitionIdChain;
+use crate::distributed_id_chain::GeRcDistributedTransitionIdChain;
 use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
 use crate::state_serializer::StateSerializer;
@@ -367,7 +367,7 @@ where
     }
 }
 
-impl<T> GeRctDistributedTransitionIdChain for DistributedFNode<T>
+impl<T> GeRcDistributedTransitionIdChain for DistributedFNode<T>
 where
     T: Numeric,
 {

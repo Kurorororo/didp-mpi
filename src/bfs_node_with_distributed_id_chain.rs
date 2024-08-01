@@ -3,10 +3,10 @@ use std::fmt::Display;
 use dypdl::variable_type::Numeric;
 use dypdl_heuristic_search::search_algorithm::data_structure::StateInformation;
 
-use crate::distributed_id_chain::GeRctDistributedTransitionIdChain;
+use crate::distributed_id_chain::GeRcDistributedTransitionIdChain;
 
 pub trait BfsNodeWithDistributedIdChain<T>:
-    Ord + StateInformation<T> + GeRctDistributedTransitionIdChain
+    Ord + StateInformation<T> + GeRcDistributedTransitionIdChain
 where
     T: Numeric + Display,
 {

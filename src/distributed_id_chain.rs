@@ -156,7 +156,7 @@ pub trait GetDistributedTransitionIdChain {
     fn get_distributed_transition_id_chain(&self) -> &DistributedTransitionIdChain;
 }
 
-pub trait GeRctDistributedTransitionIdChain: GetDistributedTransitionIdChain {
+pub trait GeRcDistributedTransitionIdChain: GetDistributedTransitionIdChain {
     fn get_rc_distributed_transition_id_chain(&self) -> &Rc<DistributedTransitionIdChain>;
 }
 

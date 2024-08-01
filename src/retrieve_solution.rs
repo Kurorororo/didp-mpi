@@ -3,9 +3,7 @@ use dypdl_heuristic_search::search_algorithm::TransitionWithId;
 use mpi::{traits::*, Tag};
 use std::rc::Rc;
 
-use crate::distributed_id_chain::{
-    DistributedTransitionIdChain, GeRctDistributedTransitionIdChain,
-};
+use crate::distributed_id_chain::{DistributedTransitionIdChain, GeRcDistributedTransitionIdChain};
 use crate::partial_solution::{
     receive_partial_solution, send_partial_solution, PartialSolutionTags,
 };
@@ -27,7 +25,7 @@ pub fn retrieve_solution<C, N, V>(
 ) -> Vec<TransitionWithId<V>>
 where
     C: Communicator,
-    N: GeRctDistributedTransitionIdChain,
+    N: GeRcDistributedTransitionIdChain,
     V: TransitionInterface + Clone,
 {
     let chain = node.get_rc_distributed_transition_id_chain();
