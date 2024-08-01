@@ -252,7 +252,7 @@ where
             .send(&mut self.tmp_buffer, destination_rank);
     }
 
-    pub fn get_depth(&self) -> usize {
+    fn get_depth(&self) -> usize {
         usize::read_from(&self.tmp_buffer[self.offset..self.offset + mem::size_of::<usize>()])
             .unwrap()
     }

@@ -42,8 +42,8 @@ where
     beam_size: usize,
     layered_registries: Layered<StateRegistry<T, N>>,
     layered_opens: Layered<BinaryHeap<Rc<N>>>,
-    layered_popped_counters: Layered<usize>,
-    layered_received_all_counters: Layered<i32>,
+    layered_beam_remaining: Layered<usize>,
+    layered_received_all_remaining: Layered<i32>,
     layered_sent_counters: Layered<Vec<i32>>,
     layered_received_counters: Layered<Vec<i32>>,
     is_pruned: bool,
@@ -132,9 +132,10 @@ where
         let layered_opens = Layered::new(open);
 
         let communicator_size = communicator.size();
-        let layered_popped_counters = Layered::new(0);
-        let layered_received_all_counters = Layered::new(communicator_size);
-        let layered_sent_counters = Layered::new(vec![0; communicator_size as usize]);
+        let layered_beam_remaining = Layered::new(beam_size);
+        let layered_received_all_remaining = Layered::new(0);
+        let mut layered_sent_counters = Layered::new(vec![0; communicator_size as usize]);
+        layered_sent_counters.pop(0);
         let layered_received_counters = Layered::new(vec![0; communicator_size as usize]);
 
         Self {
@@ -145,8 +146,8 @@ where
             beam_size,
             layered_registries,
             layered_opens,
-            layered_popped_counters,
-            layered_received_all_counters,
+            layered_beam_remaining,
+            layered_received_all_remaining,
             layered_sent_counters,
             layered_received_counters,
             is_pruned: false,
@@ -163,10 +164,12 @@ where
     fn open_node(&mut self, node: N, depth: usize) {
         let registry = self
             .layered_registries
-            .push(depth, || StateRegistry::new(self.model.clone()));
+            .get_mut_or_create(depth, || StateRegistry::new(self.model.clone()));
 
         if let Some(node) = self.search.open_node(node, registry) {
-            let open = self.layered_opens.push(depth, BinaryHeap::default);
+            let open = self
+                .layered_opens
+                .get_mut_or_create(depth, BinaryHeap::default);
             open.push(node.clone());
         }
     }
@@ -174,8 +177,17 @@ where
     fn finish_layer(&mut self, depth: usize) {
         let minimum_depth = self.layered_sent_counters.minimum_depth();
 
-        for d in minimum_depth..depth + 1 {
-            let counters = self.layered_sent_counters.get(d).unwrap();
+        println!(
+            "Rank {} finishes layers {}--{}",
+            self.communicator.rank(),
+            minimum_depth - 1,
+            depth
+        );
+
+        for d in minimum_depth..=depth + 1 {
+            let counters = self
+                .layered_sent_counters
+                .get_mut_or_create(d, || vec![0; self.communicator.size() as usize]);
 
             for destination_rank in 0..self.communicator.size() {
                 if destination_rank != self.communicator.rank() {
@@ -199,26 +211,37 @@ where
             }
         };
         self.layered_opens.pop_with(depth, callback);
+        self.layered_registries.pop(depth);
+        self.layered_beam_remaining.pop(depth);
+        self.layered_received_all_remaining.pop(depth);
+        self.layered_received_counters.pop(depth);
+
+        let counter = self
+            .layered_received_all_remaining
+            .get_mut_or_create(depth + 1, || self.communicator.size());
+        *counter -= 1;
     }
 
     fn update_received_counter(&mut self, depth: usize, rank: Rank, value: i32) {
-        let minimum_depth = self.layered_received_all_counters.minimum_depth();
+        let minimum_depth = self.layered_received_all_remaining.minimum_depth();
 
         if depth >= minimum_depth {
             let counters = self
                 .layered_received_counters
-                .push(depth, || vec![0; self.communicator.size() as usize]);
+                .get_mut_or_create(depth, || vec![0; self.communicator.size() as usize]);
             let rank = rank as usize;
             counters[rank] += value;
 
             if counters[rank] == 0 {
                 let counter = self
-                    .layered_received_all_counters
-                    .push(depth, || self.communicator.size());
+                    .layered_received_all_remaining
+                    .get_mut_or_create(depth, || self.communicator.size());
                 *counter -= 1;
 
                 if *counter == 0 {
-                    let open = self.layered_opens.get(depth).unwrap();
+                    let open = self
+                        .layered_opens
+                        .get_mut_or_create(depth, BinaryHeap::default);
 
                     if open.is_empty() {
                         self.finish_layer(depth);
@@ -355,7 +378,7 @@ where
     fn cannot_terminate(&self) -> bool {
         self.search.cannot_terminate()
             || self.n_remaining_time_out_ack > 0
-            || (!self.is_time_out && !self.layered_opens.is_empty())
+            || (!self.is_time_out && !self.layered_received_counters.is_empty())
             || (self.is_time_out
                 && (self.n_remaining_finished_all > 0 || self.n_remaining_finished_all_ack > 0))
     }
@@ -486,30 +509,34 @@ where
             {
                 let registry = self
                     .layered_registries
-                    .push(depth + 1, || StateRegistry::new(self.model.clone()));
+                    .get_mut_or_create(depth + 1, || StateRegistry::new(self.model.clone()));
                 self.search
                     .expand(node, registry, &mut keep_buffer, &mut send_buffer);
 
                 for (destination_rank, successor) in send_buffer.drain(..) {
                     self.node_communicator
                         .send(destination_rank, &successor, depth + 1);
-                    let counters = self
-                        .layered_sent_counters
-                        .push(depth + 1, || vec![0; self.communicator.size() as usize]);
+                    let counters = self.layered_sent_counters.get_mut_or_create(depth + 1, || {
+                        vec![0; self.communicator.size() as usize]
+                    });
                     counters[destination_rank as usize] += 1;
                 }
 
                 for successor in keep_buffer.drain(..) {
-                    let open = self.layered_opens.push(depth + 1, BinaryHeap::default);
+                    let open = self
+                        .layered_opens
+                        .get_mut_or_create(depth + 1, BinaryHeap::default);
                     open.push(successor);
                 }
 
-                let counter = self.layered_popped_counters.push(depth, || self.beam_size);
+                let counter = self
+                    .layered_beam_remaining
+                    .get_mut_or_create(depth, || self.beam_size);
                 *counter -= 1;
 
                 let is_exactly_last = if is_empty {
                     if let Some(received_all_counter) =
-                        self.layered_received_all_counters.get(depth)
+                        self.layered_received_all_remaining.get(depth)
                     {
                         *received_all_counter == 0
                     } else {
