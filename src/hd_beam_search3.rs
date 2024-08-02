@@ -5,6 +5,7 @@ use dypdl_heuristic_search::search_algorithm::{
     SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId,
 };
 use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
+use std::cmp;
 use std::collections::BinaryHeap;
 use std::hash::Hash;
 use std::rc::Rc;
@@ -46,6 +47,7 @@ where
     layered_received_all_remaining: Layered<i32>,
     layered_sent_counters: Layered<Vec<i32>>,
     layered_received_counters: Layered<Vec<i32>>,
+    maximum_expanded_depth: usize,
     is_pruned: bool,
     local_dual_bound: Option<T>,
     is_time_out: bool,
@@ -150,6 +152,7 @@ where
             layered_received_all_remaining,
             layered_sent_counters,
             layered_received_counters,
+            maximum_expanded_depth: 0,
             is_pruned: false,
             local_dual_bound: None,
             is_time_out: false,
@@ -176,13 +179,6 @@ where
 
     fn finish_layer(&mut self, depth: usize) {
         let minimum_depth = self.layered_sent_counters.minimum_depth();
-
-        println!(
-            "Rank {} finishes layers {}--{}",
-            self.communicator.rank(),
-            minimum_depth - 1,
-            depth
-        );
 
         for d in minimum_depth..=depth + 1 {
             let counters = self
@@ -226,6 +222,13 @@ where
         let minimum_depth = self.layered_received_all_remaining.minimum_depth();
 
         if depth >= minimum_depth {
+            if depth - 1 > self.maximum_expanded_depth
+                && self.layered_received_all_remaining.get(depth - 1) == Some(&0)
+            {
+                self.maximum_expanded_depth = depth - 1;
+                self.finish_layer(depth - 1);
+            }
+
             let counters = self
                 .layered_received_counters
                 .get_mut_or_create(depth, || vec![0; self.communicator.size() as usize]);
@@ -238,14 +241,14 @@ where
                     .get_mut_or_create(depth, || self.communicator.size());
                 *counter -= 1;
 
-                if *counter == 0 {
-                    let open = self
+                if *counter == 0
+                    && depth <= self.maximum_expanded_depth
+                    && self
                         .layered_opens
-                        .get_mut_or_create(depth, BinaryHeap::default);
-
-                    if open.is_empty() {
-                        self.finish_layer(depth);
-                    }
+                        .get(depth)
+                        .map_or(true, |open| open.is_empty())
+                {
+                    self.finish_layer(depth);
                 }
             }
         }
@@ -378,7 +381,12 @@ where
     fn cannot_terminate(&self) -> bool {
         self.search.cannot_terminate()
             || self.n_remaining_time_out_ack > 0
-            || (!self.is_time_out && !self.layered_received_counters.is_empty())
+            || (!self.is_time_out
+                && (self
+                    .layered_received_all_remaining
+                    .get(self.maximum_expanded_depth + 1)
+                    != Some(&0)
+                    || !self.layered_opens.is_empty()))
             || (self.is_time_out
                 && (self.n_remaining_finished_all > 0 || self.n_remaining_finished_all_ack > 0))
     }
@@ -427,7 +435,73 @@ where
         }
     }
 
-    pub fn finalize(&mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
+    fn expand(&mut self, keep_buffer: &mut Vec<Rc<N>>, send_buffer: &mut Vec<(Rank, M)>) -> bool {
+        let mut maximum_finish_depth = None;
+        let mut result = None;
+
+        for (depth, open) in self.layered_opens.iter_mut() {
+            let node = open_list::pop_from_open(open, &self.model, self.search.get_primal_bound());
+
+            if open.is_empty() && self.layered_received_all_remaining.get(depth) == Some(&0) {
+                maximum_finish_depth = Some(depth);
+            }
+
+            if let Some(node) = node {
+                if maximum_finish_depth
+                    .map_or(true, |maximum_finish_depth| depth > maximum_finish_depth)
+                {
+                    let counter = self
+                        .layered_beam_remaining
+                        .get_mut_or_create(depth, || self.beam_size);
+                    *counter -= 1;
+
+                    if *counter == 0 {
+                        self.is_pruned = true;
+                        maximum_finish_depth = Some(depth);
+                    }
+                }
+
+                result = Some((node, depth));
+
+                break;
+            }
+        }
+
+        let expanded = result.is_some();
+
+        if let Some((node, depth)) = result {
+            let registry = self
+                .layered_registries
+                .get_mut_or_create(depth + 1, || StateRegistry::new(self.model.clone()));
+            self.search.expand(node, registry, keep_buffer, send_buffer);
+
+            for (destination_rank, successor) in send_buffer.drain(..) {
+                self.node_communicator
+                    .send(destination_rank, &successor, depth + 1);
+                let counters = self
+                    .layered_sent_counters
+                    .get_mut_or_create(depth + 1, || vec![0; self.communicator.size() as usize]);
+                counters[destination_rank as usize] += 1;
+            }
+
+            for successor in keep_buffer.drain(..) {
+                let open = self
+                    .layered_opens
+                    .get_mut_or_create(depth + 1, BinaryHeap::default);
+                open.push(successor);
+            }
+
+            self.maximum_expanded_depth = cmp::max(depth, self.maximum_expanded_depth);
+        }
+
+        if let Some(maximum_finish_depth) = maximum_finish_depth {
+            self.finish_layer(maximum_finish_depth);
+        }
+
+        expanded
+    }
+
+    fn finalize(&mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
         let (mut solution, statistics) = self.search.finalize(self.local_dual_bound);
 
         let sendbuf = [self.is_pruned];
@@ -495,67 +569,8 @@ where
                 continue;
             }
 
-            let callback_model = self.model.clone();
-            let primal_bound = self.search.get_primal_bound();
-            let open_pop_callback = |open: &mut _| {
-                let result = open_list::pop_from_open(open, &callback_model, primal_bound);
-                let is_empty = open.is_empty();
-
-                result.map(|node| (node, is_empty))
-            };
-
-            if let Some(((node, is_empty), depth)) =
-                self.layered_opens.filter_map_min_depth(open_pop_callback)
-            {
-                let registry = self
-                    .layered_registries
-                    .get_mut_or_create(depth + 1, || StateRegistry::new(self.model.clone()));
-                self.search
-                    .expand(node, registry, &mut keep_buffer, &mut send_buffer);
-
-                for (destination_rank, successor) in send_buffer.drain(..) {
-                    self.node_communicator
-                        .send(destination_rank, &successor, depth + 1);
-                    let counters = self.layered_sent_counters.get_mut_or_create(depth + 1, || {
-                        vec![0; self.communicator.size() as usize]
-                    });
-                    counters[destination_rank as usize] += 1;
-                }
-
-                for successor in keep_buffer.drain(..) {
-                    let open = self
-                        .layered_opens
-                        .get_mut_or_create(depth + 1, BinaryHeap::default);
-                    open.push(successor);
-                }
-
-                let counter = self
-                    .layered_beam_remaining
-                    .get_mut_or_create(depth, || self.beam_size);
-                *counter -= 1;
-
-                let is_exactly_last = if is_empty {
-                    if let Some(received_all_counter) =
-                        self.layered_received_all_remaining.get(depth)
-                    {
-                        *received_all_counter == 0
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-
-                let is_last = *counter == 0 || is_exactly_last;
-
-                if is_last {
-                    if !is_exactly_last {
-                        self.is_pruned = true;
-                    }
-
-                    self.finish_layer(depth);
-                }
-            } else if self.communicator.rank() == self.search.get_root_rank()
+            if !self.expand(&mut keep_buffer, &mut send_buffer)
+                && self.communicator.rank() == self.search.get_root_rank()
                 && !self.is_checking_termination
                 && !self.cannot_terminate()
             {

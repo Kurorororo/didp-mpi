@@ -66,17 +66,18 @@ impl<T> Layered<T> {
         }
     }
 
-    pub fn filter_map_min_depth<F, R>(&mut self, mut callback: F) -> Option<(R, usize)>
-    where
-        F: FnMut(&mut T) -> Option<R>,
-    {
-        for (d, value) in self.deque.iter_mut().enumerate() {
-            if let Some(result) = callback(value) {
-                return Some((result, self.minimum_depth + d));
-            }
-        }
+    // pub fn iter(&self) -> impl Iterator<Item = (usize, &T)> {
+    //     self.deque
+    //         .iter()
+    //         .enumerate()
+    //         .map(|(i, value)| (self.minimum_depth + i, value))
+    // }
 
-        None
+    pub fn iter_mut(&mut self) -> impl Iterator<Item = (usize, &mut T)> {
+        self.deque
+            .iter_mut()
+            .enumerate()
+            .map(|(i, value)| (self.minimum_depth + i, value))
     }
 }
 
@@ -96,11 +97,6 @@ mod tests {
         assert_eq!(layered.get(4), None);
         assert_eq!(layered.minimum_depth(), 0);
 
-        let callback = |i: &mut _| if *i % 2 == 0 { Some(*i) } else { None };
-        assert_eq!(layered.filter_map_min_depth(callback), Some((0, 0)));
-        let callback = |i: &mut _| if *i % 2 == 1 { Some(*i) } else { None };
-        assert_eq!(layered.filter_map_min_depth(callback), None);
-
         let back = layered.get_mut_or_create(3, || 1);
         *back = 3;
 
@@ -118,11 +114,6 @@ mod tests {
         assert_eq!(layered.maximum_depth(), 3);
         assert!(!layered.is_empty());
 
-        let callback = |i: &mut _| if *i % 2 == 1 { Some(*i) } else { None };
-        assert_eq!(layered.filter_map_min_depth(callback), Some((1, 1)));
-        let callback = |i: &mut _| if *i > 3 { Some(*i) } else { None };
-        assert_eq!(layered.filter_map_min_depth(callback), None);
-
         layered.pop(1);
 
         assert_eq!(layered.get(2), Some(&2));
@@ -131,11 +122,6 @@ mod tests {
         assert_eq!(layered.minimum_depth(), 2);
         assert_eq!(layered.maximum_depth(), 3);
         assert!(!layered.is_empty());
-
-        let callback = |i: &mut _| if *i % 2 == 1 { Some(*i) } else { None };
-        assert_eq!(layered.filter_map_min_depth(callback), Some((3, 3)));
-        let callback = |i: &mut _| if *i > 3 { Some(*i) } else { None };
-        assert_eq!(layered.filter_map_min_depth(callback), None);
 
         layered.get_mut_or_create(3, || 1);
 
@@ -146,11 +132,6 @@ mod tests {
         assert_eq!(layered.maximum_depth(), 3);
         assert!(!layered.is_empty());
 
-        let callback = |i: &mut _| if *i % 2 == 1 { Some(*i) } else { None };
-        assert_eq!(layered.filter_map_min_depth(callback), Some((3, 3)));
-        let callback = |i: &mut _| if *i > 3 { Some(*i) } else { None };
-        assert_eq!(layered.filter_map_min_depth(callback), None);
-
         let mut sum = 0;
         let callback = |i: &mut _, _| sum += *i;
         layered.pop_with(3, callback);
@@ -159,8 +140,5 @@ mod tests {
         assert_eq!(layered.minimum_depth(), 4);
         assert!(layered.is_empty());
         assert_eq!(sum, 5);
-
-        let callback = |i: &mut _| if *i % 2 == 0 { Some(*i) } else { None };
-        assert_eq!(layered.filter_map_min_depth(callback), None);
     }
 }
