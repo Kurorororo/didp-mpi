@@ -196,6 +196,7 @@ where
         }
 
         self.layered_sent_counters.pop(depth + 1);
+        self.maximum_expanded_depth = cmp::max(self.maximum_expanded_depth, depth);
 
         let callback = |open: &mut BinaryHeap<Rc<N>>, _| {
             if let Some(node) = open.peek() {
@@ -216,6 +217,16 @@ where
             .layered_received_all_remaining
             .get_mut_or_create(depth + 1, || self.communicator.size());
         *counter -= 1;
+
+        if *counter == 0
+            && depth < self.maximum_expanded_depth
+            && self
+                .layered_opens
+                .get(depth + 1)
+                .map_or(true, |open| open.is_empty())
+        {
+            self.finish_layer(depth + 1);
+        }
     }
 
     fn update_received_counter(&mut self, depth: usize, rank: Rank, value: i32) {
@@ -225,10 +236,10 @@ where
             if depth - 1 > self.maximum_expanded_depth
                 && self.layered_received_all_remaining.get(depth - 1) == Some(&0)
             {
-                self.maximum_expanded_depth = depth - 1;
                 self.finish_layer(depth - 1);
             }
 
+            self.maximum_expanded_depth = cmp::max(self.maximum_expanded_depth, depth - 1);
             let counters = self
                 .layered_received_counters
                 .get_mut_or_create(depth, || vec![0; self.communicator.size() as usize]);
@@ -447,18 +458,17 @@ where
             }
 
             if let Some(node) = node {
+                let counter = self
+                    .layered_beam_remaining
+                    .get_mut_or_create(depth, || self.beam_size);
+                *counter -= 1;
+
                 if maximum_finish_depth
                     .map_or(true, |maximum_finish_depth| depth > maximum_finish_depth)
+                    && *counter == 0
                 {
-                    let counter = self
-                        .layered_beam_remaining
-                        .get_mut_or_create(depth, || self.beam_size);
-                    *counter -= 1;
-
-                    if *counter == 0 {
-                        self.is_pruned = true;
-                        maximum_finish_depth = Some(depth);
-                    }
+                    self.is_pruned = true;
+                    maximum_finish_depth = Some(depth);
                 }
 
                 result = Some((node, depth));
@@ -504,27 +514,89 @@ where
     fn finalize(&mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
         let (mut solution, statistics) = self.search.finalize(self.local_dual_bound);
 
-        let sendbuf = [self.is_pruned];
-        let mut recvbuf = vec![false; self.communicator.size() as usize];
-        self.communicator
-            .all_gather_into(&sendbuf, &mut recvbuf[..]);
-        let is_pruned = recvbuf.iter().any(|&x| x);
+        let root_process = self
+            .communicator
+            .process_at_rank(self.search.get_root_rank());
+
+        if self.communicator.rank() == self.search.get_root_rank() {
+            let mut buffer = [solution.cost.is_some(), solution.best_bound.is_some()];
+            root_process.broadcast_into(&mut buffer);
+
+            if solution.cost.is_some() {
+                if T::is_float() {
+                    let mut buffer = [solution.cost.unwrap().to_continuous()];
+                    root_process.broadcast_into(&mut buffer);
+                } else {
+                    let mut buffer = [solution.cost.unwrap().to_integer()];
+                    root_process.broadcast_into(&mut buffer);
+                }
+            }
+
+            if solution.best_bound.is_some() {
+                if T::is_float() {
+                    let mut buffer = [solution.best_bound.unwrap().to_continuous()];
+                    root_process.broadcast_into(&mut buffer);
+                } else {
+                    let mut buffer = [solution.best_bound.unwrap().to_integer()];
+                    root_process.broadcast_into(&mut buffer);
+                }
+            }
+        } else {
+            let mut buffer = [false, false];
+            root_process.broadcast_into(&mut buffer);
+
+            if buffer[0] {
+                if T::is_float() {
+                    let mut buffer = [0.0];
+                    root_process.broadcast_into(&mut buffer);
+                    solution.cost = Some(T::from_continuous(buffer[0]));
+                } else {
+                    let mut buffer = [0];
+                    root_process.broadcast_into(&mut buffer);
+                    solution.cost = Some(T::from_integer(buffer[0]));
+                }
+            }
+
+            if buffer[1] {
+                if T::is_float() {
+                    let mut buffer = [0.0];
+                    root_process.broadcast_into(&mut buffer);
+                    solution.best_bound = Some(T::from_continuous(buffer[0]));
+                } else {
+                    let mut buffer = [0];
+                    root_process.broadcast_into(&mut buffer);
+                    solution.best_bound = Some(T::from_integer(buffer[0]));
+                }
+            }
+        }
 
         if self.is_time_out {
             solution.time_out = true;
             solution.is_optimal = false;
             solution.is_infeasible = false;
-        } else if !is_pruned {
-            solution.is_optimal = solution.cost.is_some();
-            solution.is_infeasible = solution.cost.is_none();
+        } else {
+            let sendbuf = [self.is_pruned];
+            let mut recvbuf = vec![false; self.communicator.size() as usize];
+            self.communicator
+                .all_gather_into(&sendbuf, &mut recvbuf[..]);
 
-            if solution.is_optimal {
-                solution.best_bound = solution.cost;
+            let is_pruned = recvbuf.iter().any(|&x| x);
+
+            if !is_pruned {
+                solution.is_optimal = solution.cost.is_some();
+                solution.is_infeasible = solution.cost.is_none();
+
+                if solution.is_optimal {
+                    solution.best_bound = solution.cost;
+                }
             }
-        }
 
-        if !solution.is_optimal && solution.cost.is_some() && solution.cost == solution.best_bound {
-            solution.is_optimal = true;
+            if !solution.is_optimal
+                && solution.cost.is_some()
+                && solution.cost == solution.best_bound
+            {
+                solution.is_optimal = true;
+            }
         }
 
         solution.time = self.search.elapsed_time();

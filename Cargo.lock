@@ -43,7 +43,7 @@ dependencies = [
  "proc-macro2",
  "quote",
  "regex",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "shlex",
  "syn",
  "which",
@@ -188,7 +188,7 @@ dependencies = [
  "mpi",
  "rand",
  "rand_pcg",
- "rustc-hash",
+ "rustc-hash 2.0.0",
  "serde",
  "serde_yaml",
  "tikv-jemallocator",
@@ -210,7 +210,7 @@ dependencies = [
  "lazy_static",
  "linked-hash-map",
  "num-traits",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "serde",
  "serde_yaml",
  "tikv-jemallocator",
@@ -228,7 +228,7 @@ dependencies = [
  "itertools 0.13.0",
  "num-traits",
  "ordered-float",
- "rustc-hash",
+ "rustc-hash 1.1.0",
 ]
 
 [[package]]
@@ -246,7 +246,7 @@ dependencies = [
  "rand_distr",
  "rand_pcg",
  "rayon",
- "rustc-hash",
+ "rustc-hash 1.1.0",
  "smallvec",
 ]
 
@@ -688,6 +688,12 @@ name = "rustc-hash"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "08d43f7aa6b08d49f382cde6a7982047c3426db949b1424bc4b7ec9ae12c6ce2"
+
+[[package]]
+name = "rustc-hash"
+version = "2.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "583034fd73374156e66797ed8e5b0d5690409c9226b22d87cb7f19821c05d152"
 
 [[package]]
 name = "rustix"
