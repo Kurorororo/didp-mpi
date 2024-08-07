@@ -275,33 +275,6 @@ where
         Some((node, depth))
     }
 
-    pub fn receive_with_depth_bound(
-        &mut self,
-        source_rank: Rank,
-        primal_bound: Option<T>,
-        depth_bound: usize,
-    ) -> (Option<M>, usize) {
-        self.communicator
-            .receive_into(&mut self.tmp_buffer, source_rank);
-        let depth = self.get_depth();
-
-        if depth < depth_bound {
-            return (None, depth);
-        }
-
-        if let Some(bound) =
-            M::get_bound_from_buffer(&self.model, &self.state_serializer, &self.tmp_buffer)
-        {
-            if data_structure::exceed_bound(&self.model, bound, primal_bound) {
-                return (None, depth);
-            }
-        }
-
-        let node = M::deserialize(&self.state_serializer, &self.tmp_buffer);
-
-        (Some(node), depth)
-    }
-
     pub fn receive_and_discard(&mut self, source_rank: Rank, dual_bound: Option<T>) -> Option<T> {
         self.communicator
             .receive_into(&mut self.tmp_buffer, source_rank);
@@ -316,28 +289,6 @@ where
             }
         } else {
             None
-        }
-    }
-
-    pub fn receive_depth_and_discard(
-        &mut self,
-        source_rank: Rank,
-        dual_bound: Option<T>,
-    ) -> (Option<T>, usize) {
-        self.communicator
-            .receive_into(&mut self.tmp_buffer, source_rank);
-        let depth = self.get_depth();
-
-        if let Some(bound) =
-            M::get_bound_from_buffer(&self.model, &self.state_serializer, &self.tmp_buffer)
-        {
-            if data_structure::exceed_bound(&self.model, bound, dual_bound) {
-                (None, depth)
-            } else {
-                (Some(bound), depth)
-            }
-        } else {
-            (None, depth)
         }
     }
 
