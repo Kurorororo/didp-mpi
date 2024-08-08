@@ -57,28 +57,27 @@ fn main_with_cost_type_and_hash_function<T, H>(
         }
     }
 
+    if communicator.rank() == 0 {
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open("history.csv")
+            .unwrap();
+        file.write_all(String::from("").as_bytes()).unwrap();
+    }
+
     parameters.beam_search_parameters.parameters.quiet |= communicator.rank() != 0;
 
     let mut statistics_list = vec![Statistics::default(); communicator.size() as usize];
     let mut dual_bound = None;
 
     let beam_search = |input: &SearchInput<_, _>, parameters: BeamSearchParameters<_>| {
-        let solution_filename = if communicator.rank() == 0 {
-            Some(String::from("solution.yaml"))
-        } else {
-            None
-        };
-        let history_filename = if communicator.rank() == 0 {
-            Some(String::from("history.csv"))
-        } else {
-            None
-        };
-
         let beam_size = parameters.beam_size;
         let parameters = MpiAnytimeSearchParameters {
             controller_rank: 0,
-            solution_filename,
-            history_filename,
+            solution_filename: None,
+            history_filename: None,
             count_bound_to_expanded: false,
             parameters: parameters.parameters,
             dual_bound,
