@@ -767,10 +767,6 @@ where
         let mut keep_buffer = vec![];
         let mut send_buffer = vec![];
 
-        if self.layered_opens.get(0).unwrap().is_empty() {
-            self.finish_layer(0);
-        }
-
         loop {
             self.process_message();
 

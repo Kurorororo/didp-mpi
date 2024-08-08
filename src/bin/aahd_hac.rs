@@ -84,6 +84,7 @@ fn main_with_cost_type<T>(
         history_filename,
         count_bound_to_expanded: additional_parameters.count_bound_to_expanded,
         parameters,
+        dual_bound: None,
     };
 
     let mut root_node = None;

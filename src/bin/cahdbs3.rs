@@ -60,6 +60,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     parameters.beam_search_parameters.parameters.quiet |= communicator.rank() != 0;
 
     let mut statistics_list = vec![Statistics::default(); communicator.size() as usize];
+    let mut dual_bound = None;
 
     let beam_search = |input: &SearchInput<_, _>, parameters: BeamSearchParameters<_>| {
         let solution_filename = if communicator.rank() == 0 {
@@ -80,6 +81,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
             history_filename,
             count_bound_to_expanded: false,
             parameters: parameters.parameters,
+            dual_bound,
         };
         let evaluators = didp_mpi::make_mpi_dual_bound_evaluators(
             input.generator.model.clone(),
@@ -96,6 +98,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         );
         let (solution, tmp_statistics) = solver.search();
 
+        dual_bound = solution.best_bound;
         statistics_list
             .iter_mut()
             .zip(tmp_statistics)

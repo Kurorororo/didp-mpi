@@ -214,6 +214,7 @@ where
     pub history_filename: Option<String>,
     pub count_bound_to_expanded: bool,
     pub parameters: Parameters<T>,
+    pub dual_bound: Option<T>,
 }
 
 struct MpiSolutionManager<'a, T, B, V>
@@ -321,6 +322,11 @@ where
                 .unwrap()
         });
 
+        let solution = Solution {
+            best_bound: parameters.dual_bound,
+            ..Default::default()
+        };
+
         Self {
             model,
             forced_transitions,
@@ -331,7 +337,7 @@ where
             suffix,
             primal_bound,
             count_bound_to_expanded,
-            solution: Solution::default(),
+            solution,
             time_offset: 0.0,
             statistics: Statistics::default(),
             bound_to_expanded: FxHashMap::default(),
@@ -445,6 +451,12 @@ where
     }
 
     pub fn update_dual_bound(&mut self, dual_bound: T) {
+        if let Some(best_bound) = self.solution.best_bound {
+            if data_structure::exceed_bound(&self.model, best_bound, Some(dual_bound)) {
+                return;
+            }
+        }
+
         self.solution.best_bound = Some(dual_bound);
 
         if !self.quiet {
@@ -814,11 +826,11 @@ where
 
             if let Some(value) = global_dual_bound {
                 if data_structure::exceed_bound(model, value, self.primal_bound) {
-                    global_dual_bound = self.primal_bound;
+                    self.update_dual_bound(self.primal_bound.unwrap());
+                } else {
+                    self.update_dual_bound(value);
                 }
             }
-
-            self.solution.best_bound = global_dual_bound;
 
             for destination_rank in 0..n_ranks {
                 if destination_rank == this_rank {

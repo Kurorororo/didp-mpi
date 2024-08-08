@@ -72,6 +72,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         history_filename,
         count_bound_to_expanded,
         parameters,
+        dual_bound: None,
     };
 
     if communicator.rank() == 0 {
