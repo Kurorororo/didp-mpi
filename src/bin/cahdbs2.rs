@@ -1,6 +1,6 @@
 use didp_mpi::{
-    AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType, IsFloat,
-    NodeMessage, Statistics,
+    AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType,
+    Hdbs2Parameters, IsFloat, NodeMessage, Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -100,8 +100,13 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     let mut statistics = Statistics::default();
     let mut root_rank = None;
+    let mut dual_bound = None;
 
     let beam_search = |input: &SearchInput<_, _>, parameters| {
+        let parameters = Hdbs2Parameters {
+            parameters,
+            dual_bound,
+        };
         let (solution, goal_rank, tmp_statistics) = didp_mpi::hd_beam_search2(
             input,
             &transition_evaluator,
@@ -111,6 +116,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
             &communicator,
             0,
         );
+        dual_bound = solution.best_bound;
         statistics += tmp_statistics;
 
         if goal_rank == Some(communicator.rank()) && solution.cost.is_some() {

@@ -217,11 +217,17 @@ impl<T: IsFloat> LocalLayerMessage<T> {
     }
 }
 
+#[derive(Debug, PartialEq, Clone, Copy)]
+pub struct Hdbs2Parameters<T> {
+    pub parameters: BeamSearchParameters<T>,
+    pub dual_bound: Option<T>,
+}
+
 pub fn hd_beam_search2<'a, T, N, M, E, B, F, V>(
     input: &'a SearchInput<'a, M, TransitionWithId<V>>,
     transition_evaluator: E,
     base_cost_evaluator: B,
-    parameters: BeamSearchParameters<T>,
+    parameters: Hdbs2Parameters<T>,
     hash_function: F,
     communicator: &'a SimpleCommunicator,
     controller_rank: Rank,
@@ -238,20 +244,22 @@ where
     let this_rank = communicator.rank();
     let time_keeper = parameters
         .parameters
+        .parameters
         .time_limit
         .map_or_else(TimeKeeper::default, TimeKeeper::with_time_limit);
 
-    let quiet = this_rank != 0 || parameters.parameters.quiet;
-    let mut primal_bound = parameters.parameters.primal_bound;
+    let quiet = this_rank != 0 || parameters.parameters.parameters.quiet;
+    let mut primal_bound = parameters.parameters.parameters.primal_bound;
     let n_ranks = communicator.size() as u64;
 
     let model = &input.generator.model;
     let generator = &input.generator;
     let suffix = input.solution_suffix;
-    let mut current_beam = Beam::<_, N>::new(parameters.beam_size);
-    let mut next_beam = Beam::<_, N>::new(parameters.beam_size);
+    let mut current_beam = Beam::<_, N>::new(parameters.parameters.beam_size);
+    let mut next_beam = Beam::<_, N>::new(parameters.parameters.beam_size);
     let mut registry = StateRegistry::<_, N>::new(model.clone());
     let capacity = parameters
+        .parameters
         .parameters
         .initial_registry_capacity
         .unwrap_or_else(|| current_beam.capacity());
@@ -271,7 +279,7 @@ where
             current_beam.insert(&mut registry, node);
             generated += 1;
 
-            if !parameters.keep_all_layers {
+            if !parameters.parameters.keep_all_layers {
                 registry.clear();
             }
         }
@@ -286,7 +294,7 @@ where
     let mut layer_index = 0;
 
     let mut pruned = false;
-    let mut best_dual_bound = None;
+    let mut best_dual_bound = parameters.dual_bound;
     let mut layer_dual_bound = None;
     let mut removed_dual_bound = None;
     let mut time_out = this_rank == controller_rank && time_keeper.check_time_limit(quiet);
@@ -337,7 +345,7 @@ where
             let mut received_all = 0;
             let mut best_dual_bound_checked = false;
 
-            let mut iter = if parameters.keep_all_layers {
+            let mut iter = if parameters.parameters.keep_all_layers {
                 current_beam.close_and_drain()
             } else {
                 current_beam.drain()
@@ -723,7 +731,7 @@ where
 
         mem::swap(&mut current_beam, &mut next_beam);
 
-        if !parameters.keep_all_layers {
+        if !parameters.parameters.keep_all_layers {
             registry.clear();
         }
 

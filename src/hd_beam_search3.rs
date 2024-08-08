@@ -351,7 +351,8 @@ where
         let layered_received_all_remaining = Layered::new(0);
         let mut layered_sent_counters = Layered::new(vec![0; communicator_size as usize]);
         layered_sent_counters.pop(0);
-        let layered_received_counters = Layered::new(vec![0; communicator_size as usize]);
+        let mut layered_received_counters = Layered::new(vec![0; communicator_size as usize]);
+        layered_received_counters.pop(0);
 
         Self {
             model,

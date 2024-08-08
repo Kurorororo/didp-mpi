@@ -450,7 +450,7 @@ where
         self.statistics.dominated_after_closed += n;
     }
 
-    pub fn update_dual_bound(&mut self, dual_bound: T) {
+    pub fn update_dual_bound_if_better(&mut self, dual_bound: T) {
         if let Some(best_bound) = self.solution.best_bound {
             if data_structure::exceed_bound(&self.model, best_bound, Some(dual_bound)) {
                 return;
@@ -826,9 +826,9 @@ where
 
             if let Some(value) = global_dual_bound {
                 if data_structure::exceed_bound(model, value, self.primal_bound) {
-                    self.update_dual_bound(self.primal_bound.unwrap());
+                    self.update_dual_bound_if_better(self.primal_bound.unwrap());
                 } else {
-                    self.update_dual_bound(value);
+                    self.update_dual_bound_if_better(value);
                 }
             }
 
@@ -1116,6 +1116,18 @@ where
         registry: &mut StateRegistry<T, N>,
     ) -> Option<Rc<N>> {
         if let Some(node) = node {
+            if let Some(bound) = node.bound(&self.generator.model) {
+                if data_structure::exceed_bound(
+                    &self.generator.model,
+                    bound,
+                    self.solution_manager.get_primal_bound(),
+                ) {
+                    return None;
+                }
+
+                self.solution_manager.update_dual_bound_if_better(bound);
+            }
+
             let hash_value = (self.hash_function)(node.signature());
             let assigned_rank = (hash_value % self.communicator.size() as u64) as Rank;
 
@@ -1136,10 +1148,6 @@ where
                     None
                 } else {
                     let node = N::from(node);
-
-                    if let Some(bound) = node.bound(&self.generator.model) {
-                        self.solution_manager.update_dual_bound(bound);
-                    }
 
                     self.open_node(node, registry)
                 }
