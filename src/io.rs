@@ -4,8 +4,8 @@ use didp_yaml::{
 };
 use dypdl::{prelude::*, variable_type::Numeric};
 use dypdl_heuristic_search::{
-    BeamSearchParameters, CabsParameters, FEvaluatorType, Parameters, ProgressiveSearchParameters,
-    Search, Solution,
+    BeamSearchParameters, BrfsParameters, CabsParameters, FEvaluatorType, Parameters,
+    ProgressiveSearchParameters, Search, Solution,
 };
 use linked_hash_map::LinkedHashMap;
 use std::fs;
@@ -271,6 +271,20 @@ pub fn load_f_evaluator_type_from_map(map: &LinkedHashMap<Yaml, Yaml>) -> FEvalu
             }
         })
         .unwrap_or(FEvaluatorType::Plus)
+}
+
+pub fn load_brfs_parameters_from_map<T>(map: &LinkedHashMap<Yaml, Yaml>) -> BrfsParameters<T>
+where
+    T: Numeric,
+    <T as FromStr>::Err: Debug,
+{
+    let parameters = load_parameters_from_map::<T>(map);
+    let keep_all_layers = load_bool_from_map(map, "keep_all_layers").unwrap_or(false);
+
+    BrfsParameters {
+        parameters,
+        keep_all_layers,
+    }
 }
 
 pub fn load_cabs_parameters_from_map<T>(map: &LinkedHashMap<Yaml, Yaml>) -> CabsParameters<T>
