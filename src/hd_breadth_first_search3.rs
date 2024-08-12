@@ -4,22 +4,19 @@ use dypdl_heuristic_search::search_algorithm::{
     data_structure::{self, HashableSignatureVariables, StateWithHashableSignatureVariables},
     SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId,
 };
-use mpi::{datatype::UserDatatype, topology::SimpleCommunicator, traits::*, Address, Rank, Tag};
-use std::collections::BinaryHeap;
+use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
 use std::hash::Hash;
-use std::marker::PhantomData;
 use std::rc::Rc;
 use std::str::FromStr;
-use std::{cmp, mem};
+use std::{cmp, collections::VecDeque};
 use std::{
     fmt::{Debug, Display},
     vec,
 };
-use zerocopy::{AsBytes, FromBytes};
 
+use crate::hd_beam_search3::Hdbs3NodeCommunicator;
+use crate::layered::Layered;
 use crate::open_list;
-use crate::state_serializer::StateSerializer;
-use crate::timestamped_communicator::TimestampedUserCommunicator;
 use crate::{
     bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
 };
@@ -30,224 +27,9 @@ use crate::{
         MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters,
     },
 };
-use crate::{layered::Layered, node_data_type::NodeDatatype};
 use crate::{node_message::NodeMessage, statistics::Statistics};
 
-pub struct Hdbs3NodeCommunicator<'a, C, M, T> {
-    model: Rc<Model>,
-    communicator: TimestampedUserCommunicator<'a, C>,
-    tag: Tag,
-    tag_n_sent: Tag,
-    state_serializer: StateSerializer,
-    node_datatype: UserDatatype,
-    sent_all_datatype: UserDatatype,
-    offset_for_depth: usize,
-    offset_for_timestamp: usize,
-    tmp_buffer: Vec<u8>,
-    _phantom: PhantomData<(M, T)>,
-}
-
-impl<'a, C, M, T> Hdbs3NodeCommunicator<'a, C, M, T>
-where
-    C: Communicator,
-    M: NodeDatatype<T, S = M>,
-    T: Numeric + IsFloat,
-{
-    pub fn new(
-        communicator: &'a C,
-        tag: Tag,
-        tag_n_sent: Tag,
-        tag_termination_detection: Tag,
-        model: Rc<Model>,
-    ) -> Self {
-        let state_serializer = StateSerializer::with_model(&model);
-
-        let mut blocklengths = M::get_datatype_blocklengths(&state_serializer);
-        let mut displacements = M::get_datatype_displacements(&state_serializer);
-        let mut types = M::get_datatype_types(&state_serializer);
-        let offset_for_depth = M::get_total_size(&state_serializer);
-
-        blocklengths.push(1);
-        displacements.push(offset_for_depth as Address);
-        types.push(usize::equivalent_datatype());
-
-        let offset_for_timestamp = offset_for_depth + mem::size_of::<usize>();
-        blocklengths.push(1);
-        displacements.push(offset_for_timestamp as Address);
-        types.push(usize::equivalent_datatype());
-
-        let node_datatype = UserDatatype::structured(&blocklengths, &displacements, &types);
-        let sent_all_datatype = UserDatatype::structured(
-            &[1, 2],
-            &[0, mem::size_of::<i32>() as Address],
-            &[i32::equivalent_datatype(), usize::equivalent_datatype()],
-        );
-
-        let communicator =
-            TimestampedUserCommunicator::new(communicator, tag_termination_detection);
-
-        let total_size = offset_for_timestamp + mem::size_of::<usize>();
-        let tmp_buffer = vec![0; total_size];
-
-        Self {
-            model,
-            communicator,
-            tag,
-            tag_n_sent,
-            state_serializer,
-            node_datatype,
-            sent_all_datatype,
-            offset_for_depth,
-            offset_for_timestamp,
-            tmp_buffer,
-            _phantom: PhantomData,
-        }
-    }
-
-    fn serialize_sent_all_message(n_sent: i32, depth: usize, buffer: &mut [u8]) {
-        buffer[..mem::size_of::<i32>()].copy_from_slice(n_sent.as_bytes());
-        buffer[mem::size_of::<i32>()..mem::size_of::<i32>() + mem::size_of::<usize>()]
-            .copy_from_slice(depth.as_bytes());
-    }
-
-    fn deserialize_sent_all_message(buffer: &[u8]) -> (i32, usize) {
-        let n_sent = i32::read_from(&buffer[..mem::size_of::<i32>()]).unwrap();
-        let depth = usize::read_from(
-            &buffer[mem::size_of::<i32>()..mem::size_of::<i32>() + mem::size_of::<usize>()],
-        )
-        .unwrap();
-
-        (n_sent, depth)
-    }
-
-    pub fn send<N>(&mut self, destination_rank: Rank, node: &N, depth: usize)
-    where
-        N: NodeDatatype<T, S = M>,
-    {
-        node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
-        self.tmp_buffer[self.offset_for_depth..self.offset_for_depth + mem::size_of::<usize>()]
-            .copy_from_slice(depth.as_bytes());
-
-        self.communicator.buffered_send_with_tag(
-            &mut self.tmp_buffer,
-            self.offset_for_timestamp,
-            destination_rank,
-            self.tag,
-            &self.node_datatype,
-        );
-    }
-
-    fn get_depth(&self) -> usize {
-        usize::read_from(
-            &self.tmp_buffer
-                [self.offset_for_depth..self.offset_for_depth + mem::size_of::<usize>()],
-        )
-        .unwrap()
-    }
-
-    pub fn receive(
-        &mut self,
-        source_rank: Rank,
-        primal_bound: Option<T>,
-        depth_bound: usize,
-    ) -> (Option<M>, Option<T>, usize) {
-        self.communicator.receive_into_with_tag(
-            &mut self.tmp_buffer,
-            self.offset_for_timestamp,
-            source_rank,
-            self.tag,
-            &self.node_datatype,
-        );
-        let depth = self.get_depth();
-        let bound = M::get_bound_from_buffer(&self.model, &self.state_serializer, &self.tmp_buffer);
-
-        if depth < depth_bound {
-            return (None, bound, depth);
-        }
-
-        if let Some(bound) = bound {
-            if data_structure::exceed_bound(&self.model, bound, primal_bound) {
-                return (None, Some(bound), depth);
-            }
-        }
-
-        let node = M::deserialize(&self.state_serializer, &self.tmp_buffer);
-
-        (Some(node), bound, depth)
-    }
-
-    pub fn receive_and_discard(
-        &mut self,
-        source_rank: Rank,
-        dual_bound: Option<T>,
-    ) -> (Option<T>, usize) {
-        self.communicator.receive_into_with_tag(
-            &mut self.tmp_buffer,
-            self.offset_for_timestamp,
-            source_rank,
-            self.tag,
-            &self.node_datatype,
-        );
-        let depth = self.get_depth();
-
-        if let Some(bound) =
-            M::get_bound_from_buffer(&self.model, &self.state_serializer, &self.tmp_buffer)
-        {
-            if data_structure::exceed_bound(&self.model, bound, dual_bound) {
-                (None, depth)
-            } else {
-                (Some(bound), depth)
-            }
-        } else {
-            (None, depth)
-        }
-    }
-
-    pub fn send_n_sent(&mut self, destination_rank: Rank, n_sent: i32, depth: usize) {
-        let mut buffer = [0; mem::size_of::<i32>() + 2 * mem::size_of::<usize>()];
-        Self::serialize_sent_all_message(n_sent, depth, &mut buffer);
-
-        self.communicator.buffered_send_with_tag(
-            &mut buffer,
-            mem::size_of::<i32>() + mem::size_of::<usize>(),
-            destination_rank,
-            self.tag_n_sent,
-            &self.sent_all_datatype,
-        );
-    }
-
-    pub fn receive_n_sent(&mut self, source_rank: Rank) -> (i32, usize) {
-        let mut buffer = [0; mem::size_of::<i32>() + 2 * mem::size_of::<usize>()];
-        self.communicator.receive_into_with_tag(
-            &mut buffer,
-            mem::size_of::<i32>() + mem::size_of::<usize>(),
-            source_rank,
-            self.tag_n_sent,
-            &self.sent_all_datatype,
-        );
-
-        Self::deserialize_sent_all_message(&buffer)
-    }
-
-    pub fn initiate_termination(&mut self, destination_rank: Rank) {
-        self.communicator.initiate_termination(destination_rank);
-    }
-
-    pub fn receive_termination_detection_and_forward(
-        &mut self,
-        source_rank: Rank,
-        destination_rank: Rank,
-        local_invalid: bool,
-    ) -> Option<bool> {
-        self.communicator.receive_termination_detection_and_forward(
-            source_rank,
-            destination_rank,
-            local_invalid,
-        )
-    }
-}
-
-pub struct Hdbs3<'a, T, N, M, L, R, B, F, V = Transition>
+pub struct Hdbrfs3<'a, T, N, M, L, R, B, F, V = Transition>
 where
     T: Numeric + IsFloat + Ord + Display,
     N: BfsNodeWithDistributedIdChain<T> + From<M>,
@@ -257,10 +39,8 @@ where
     search: MpiAnytimeSearch<'a, T, N, M, L, R, B, F, V>,
     communicator: &'a SimpleCommunicator,
     node_communicator: Hdbs3NodeCommunicator<'a, SimpleCommunicator, M, T>,
-    beam_size: usize,
     layered_registries: Layered<StateRegistry<T, N>>,
-    layered_opens: Layered<BinaryHeap<Rc<N>>>,
-    layered_beam_remaining: Layered<usize>,
+    layered_opens: Layered<VecDeque<Rc<N>>>,
     layered_received_all_remaining: Layered<i32>,
     layered_sent_counters: Layered<Vec<i32>>,
     layered_received_counters: Layered<Vec<i32>>,
@@ -273,7 +53,7 @@ where
     is_terminated: bool,
 }
 
-impl<'a, T, N, M, L, R, B, F, V> Hdbs3<'a, T, N, M, L, R, B, F, V>
+impl<'a, T, N, M, L, R, B, F, V> Hdbrfs3<'a, T, N, M, L, R, B, F, V>
 where
     T: Numeric + IsFloat + Ord + Display + Hash,
     <T as FromStr>::Err: Debug,
@@ -314,7 +94,6 @@ where
         input: &SearchInput<'a, M, TransitionWithId<V>>,
         evaluators: MpiAnytimeSearchEvaluators<L, R, B>,
         mut parameters: MpiAnytimeSearchParameters<T>,
-        beam_size: usize,
         hash_function: F,
         communicator: &'a SimpleCommunicator,
     ) -> Self {
@@ -339,17 +118,16 @@ where
         );
 
         let mut registry = StateRegistry::new(model.clone());
-        let mut open = BinaryHeap::default();
+        let mut open = VecDeque::default();
 
         if let Some(node) = search.generate_root_node(input.node.clone(), &mut registry) {
-            open.push(node);
+            open.push_back(node);
         }
 
         let layered_registries = Layered::new(registry);
         let layered_opens = Layered::new(open);
 
         let communicator_size = communicator.size();
-        let layered_beam_remaining = Layered::new(beam_size);
         let layered_received_all_remaining = Layered::new(0);
         let mut layered_sent_counters = Layered::new(vec![0; communicator_size as usize]);
         layered_sent_counters.pop(0);
@@ -361,10 +139,8 @@ where
             search,
             communicator,
             node_communicator,
-            beam_size,
             layered_registries,
             layered_opens,
-            layered_beam_remaining,
             layered_received_all_remaining,
             layered_sent_counters,
             layered_received_counters,
@@ -386,8 +162,8 @@ where
         if let Some(node) = self.search.open_node(node, registry) {
             let open = self
                 .layered_opens
-                .get_mut_or_create(depth, BinaryHeap::default);
-            open.push(node.clone());
+                .get_mut_or_create(depth, VecDeque::default);
+            open.push_back(node.clone());
         }
     }
 
@@ -427,18 +203,8 @@ where
 
         self.layered_sent_counters.pop(depth + 1);
 
-        let callback = |open: &mut BinaryHeap<Rc<N>>, _| {
-            if let Some(node) = open.peek() {
-                if let Some(bound) = node.bound(&self.model) {
-                    if !data_structure::exceed_bound(&self.model, bound, self.local_dual_bound) {
-                        self.local_dual_bound = Some(bound);
-                    }
-                }
-            }
-        };
-        self.layered_opens.pop_with(depth, callback);
+        self.layered_opens.pop(depth);
         self.layered_registries.pop(depth);
-        self.layered_beam_remaining.pop(depth);
         self.layered_received_all_remaining.pop(depth);
         self.layered_received_counters.pop(depth);
 
@@ -507,8 +273,21 @@ where
         self.update_received_counter(depth, source_rank, -n_sent);
     }
 
+    fn flush_open(&mut self) {
+        for (_, open) in self.layered_opens.iter_mut() {
+            for node in open.drain(..) {
+                if let Some(bound) = node.bound(&self.model) {
+                    if !data_structure::exceed_bound(&self.model, bound, self.local_dual_bound) {
+                        self.local_dual_bound = Some(bound);
+                    }
+                }
+            }
+        }
+    }
+
     fn broadcast_time_out(&mut self) {
         if !self.layered_opens.is_empty() {
+            self.flush_open();
             let maximum_depth = self.layered_opens.maximum_depth();
             self.finish_layer(maximum_depth);
         }
@@ -530,6 +309,7 @@ where
         self.is_time_out = true;
 
         if !self.layered_opens.is_empty() {
+            self.flush_open();
             let maximum_depth = self.layered_opens.maximum_depth();
             self.finish_layer(maximum_depth);
         }
@@ -613,7 +393,7 @@ where
         let mut result = None;
 
         for (depth, open) in self.layered_opens.iter_mut() {
-            let node = open_list::pop_from_open(open, &self.model, self.search.get_primal_bound());
+            let node = open_list::pop_from_queue(open, &self.model, self.search.get_primal_bound());
 
             if open.is_empty() && self.layered_received_all_remaining.get(depth) == Some(&0) {
                 maximum_finish_depth = Some(depth);
@@ -621,19 +401,6 @@ where
             }
 
             if let Some(node) = node {
-                let counter = self
-                    .layered_beam_remaining
-                    .get_mut_or_create(depth, || self.beam_size);
-                *counter -= 1;
-
-                if maximum_finish_depth
-                    .map_or(true, |maximum_finish_depth| depth > maximum_finish_depth)
-                    && *counter == 0
-                {
-                    self.is_pruned = true;
-                    maximum_finish_depth = Some(depth);
-                }
-
                 result = Some((node, depth));
                 self.maximum_expanded_depth = cmp::max(depth, self.maximum_expanded_depth);
 
@@ -661,8 +428,8 @@ where
             for successor in keep_buffer.drain(..) {
                 let open = self
                     .layered_opens
-                    .get_mut_or_create(depth + 1, BinaryHeap::default);
-                open.push(successor);
+                    .get_mut_or_create(depth + 1, VecDeque::default);
+                open.push_back(successor);
             }
         }
 

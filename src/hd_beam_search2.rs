@@ -41,7 +41,7 @@ const TAG_RETRIEVE_SOLUTION: RetrieveSolutionTags = RetrieveSolutionTags {
     tag_partial_solution_finished: TAG_PARTIAL_SOLUTION_FINISHED,
 };
 
-struct BufferedNodeCommunicator<'a, C, M, T> {
+pub struct BufferedNodeCommunicator<'a, C, M, T> {
     communicator: NodeCommunicator<'a, C, M, T>,
     buffers: Vec<Vec<M>>,
     channel_open: Vec<bool>,
@@ -53,7 +53,7 @@ where
     M: NodeMessage<T>,
     T: IsFloat,
 {
-    fn new(communicator: &'a C, tag: Tag, model: Rc<Model>, capacity: usize) -> Self {
+    pub fn new(communicator: &'a C, tag: Tag, model: Rc<Model>, capacity: usize) -> Self {
         let inner = NodeCommunicator::new(communicator, tag, model);
 
         let n_ranks = communicator.size() as usize;
@@ -77,13 +77,13 @@ where
         }
     }
 
-    fn close_channels(&mut self) {
+    pub fn close_channels(&mut self) {
         self.channel_open.iter_mut().for_each(|channel_open| {
             *channel_open = false;
         });
     }
 
-    fn open_channel(&mut self, destination_rank: Rank) {
+    pub fn open_channel(&mut self, destination_rank: Rank) {
         let destination_rank = destination_rank as usize;
         self.channel_open[destination_rank] = true;
         self.buffers[destination_rank]
@@ -91,7 +91,7 @@ where
             .for_each(|node| self.communicator.send(destination_rank as Rank, node))
     }
 
-    fn send(&mut self, destination_rank: Rank, node: M) {
+    pub fn send(&mut self, destination_rank: Rank, node: M) {
         let destination_rank = destination_rank as usize;
 
         if self.channel_open[destination_rank] {
@@ -101,7 +101,7 @@ where
         }
     }
 
-    fn receive(&mut self, source_rank: Rank, primal_bound: Option<T>) -> Option<M> {
+    pub fn receive(&mut self, source_rank: Rank, primal_bound: Option<T>) -> Option<M> {
         self.communicator.receive(source_rank, primal_bound)
     }
 }
