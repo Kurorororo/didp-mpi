@@ -313,12 +313,14 @@ where
     pub fn new(
         input: &SearchInput<'a, M, TransitionWithId<V>>,
         evaluators: MpiAnytimeSearchEvaluators<L, R, B>,
-        parameters: MpiAnytimeSearchParameters<T>,
+        mut parameters: MpiAnytimeSearchParameters<T>,
         beam_size: usize,
         hash_function: F,
         communicator: &'a SimpleCommunicator,
     ) -> Self {
         let model = input.generator.model.clone();
+        parameters.parameters.quiet = communicator.rank() != parameters.controller_rank;
+
         let mut search = MpiAnytimeSearch::new(
             input.generator.clone(),
             input.solution_suffix,

@@ -11,7 +11,7 @@ use dypdl_heuristic_search::{
     search_algorithm::{
         data_structure::HashableSignatureVariables, util::TimeKeeper, Cabs, SearchInput,
     },
-    BeamSearchParameters, CabsParameters, FEvaluatorType, Search,
+    BeamSearchParameters, CabsParameters, FEvaluatorType, Search, Solution,
 };
 use mpi::{environment::Universe, traits::*};
 use std::fmt::{Debug, Display};
@@ -103,14 +103,6 @@ fn main_with_cost_type_and_hash_function<T, H>(
             .zip(tmp_statistics)
             .for_each(|(s, t)| *s += t);
 
-        if communicator.rank() == 0 && solution.cost.is_some() {
-            didp_mpi::write_solution(&solution, "solution.yaml");
-
-            let mut file = OpenOptions::new().append(true).open("history.csv").unwrap();
-            let line = format!("{}, {}\n", solution.time, solution.cost.unwrap(),);
-            file.write_all(line.as_bytes()).unwrap();
-        }
-
         solution
     };
 
@@ -121,7 +113,26 @@ fn main_with_cost_type_and_hash_function<T, H>(
     }
 
     let mut solver = Cabs::<_, _, _, _>::new(input, beam_search, parameters);
-    let mut solution = solver.search().unwrap();
+    let mut solution = Solution::default();
+    let mut is_terminated = false;
+
+    while !is_terminated {
+        (solution, is_terminated) = solver.search_next().unwrap();
+
+        if communicator.rank() == 0 {
+            didp_mpi::write_solution(&solution, "solution.yaml");
+
+            let mut file = OpenOptions::new().append(true).open("history.csv").unwrap();
+            let line = format!(
+                "{}, {}, {}, {}\n",
+                solution.time,
+                solution.cost.unwrap(),
+                solution.expanded,
+                solution.generated
+            );
+            file.write_all(line.as_bytes()).unwrap();
+        }
+    }
 
     if communicator.rank() == 0 {
         solution.expanded = statistics_list.iter().map(|s| s.expanded).sum();
