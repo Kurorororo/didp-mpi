@@ -364,6 +364,10 @@ where
                 if !expanded_all {
                     // Expands a node.
                     if let Some(node) = iter.next() {
+                        if node.is_closed() {
+                            continue;
+                        }
+
                         if let Some(bound) = node.bound(model) {
                             if data_structure::exceed_bound(model, bound, primal_bound) {
                                 continue;
