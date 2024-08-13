@@ -120,17 +120,15 @@ fn main_with_cost_type_and_hash_function<T, H>(
         (solution, is_terminated) = solver.search_next().unwrap();
 
         if communicator.rank() == 0 {
-            didp_mpi::write_solution(&solution, "solution.yaml");
-
-            let mut file = OpenOptions::new().append(true).open("history.csv").unwrap();
-            let line = format!(
-                "{}, {}, {}, {}\n",
-                solution.time,
-                solution.cost.unwrap(),
-                solution.expanded,
-                solution.generated
-            );
-            file.write_all(line.as_bytes()).unwrap();
+            if let Some(cost) = solution.cost {
+                didp_mpi::write_solution(&solution, "solution.yaml");
+                let mut file = OpenOptions::new().append(true).open("history.csv").unwrap();
+                let line = format!(
+                    "{}, {}, {}, {}\n",
+                    solution.time, cost, solution.expanded, solution.generated
+                );
+                file.write_all(line.as_bytes()).unwrap();
+            }
         }
     }
 
