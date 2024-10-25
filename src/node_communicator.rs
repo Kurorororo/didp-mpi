@@ -8,7 +8,7 @@ use mpi::{traits::*, Address};
 use std::marker::PhantomData;
 use std::mem;
 use std::rc::Rc;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
@@ -253,7 +253,7 @@ where
     }
 
     fn get_depth(&self) -> usize {
-        usize::read_from(&self.tmp_buffer[self.offset..self.offset + mem::size_of::<usize>()])
+        usize::read_from_bytes(&self.tmp_buffer[self.offset..self.offset + mem::size_of::<usize>()])
             .unwrap()
     }
 

@@ -18,7 +18,7 @@ use std::{
 };
 use yaml_rust::{Yaml, YamlLoader};
 
-use crate::{aah::AahParameters, InitiationParameters, Statistics};
+use crate::Statistics;
 
 pub fn read_model(args: &mut Args) -> Model {
     let domain = args.next().unwrap_or_else(|| {
@@ -325,14 +325,8 @@ pub fn load_progressive_parameters_from_map(
 }
 
 pub enum HashType {
-    Wy,
-    MaskedWy,
     Fx,
-    MaskedFx,
     SetZobrist,
-    SetZobristWithOthers,
-    ThreeBitsFieldZobrist,
-    FourBitsFieldZobrist,
 }
 
 pub struct AdditionalCommonParameters {
@@ -340,7 +334,6 @@ pub struct AdditionalCommonParameters {
     pub buffer_size: Option<usize>,
     pub hash_type: HashType,
     pub abstraction_probability: Option<f64>,
-    pub count_bound_to_expanded: bool,
 }
 
 impl AdditionalCommonParameters {
@@ -353,14 +346,8 @@ impl AdditionalCommonParameters {
             .map(|t| {
                 let t = t.as_str().expect("hash_type must be string");
                 match t {
-                    "wy" => HashType::Wy,
-                    "masked_wy" => HashType::MaskedWy,
                     "fx" => HashType::Fx,
-                    "masked_fx" => HashType::MaskedFx,
                     "set_zobrist" => HashType::SetZobrist,
-                    "set_zobrist_with_others" => HashType::SetZobristWithOthers,
-                    "4bits_field_zobrist" => HashType::FourBitsFieldZobrist,
-                    "3bits_field_zobrist" => HashType::ThreeBitsFieldZobrist,
                     _ => panic!("Invalid hash_type {:?}", t),
                 }
             })
@@ -368,47 +355,12 @@ impl AdditionalCommonParameters {
 
         let abstraction_probability = load_f64_from_map(map, "abstraction_probability")
             .or_else(|| load_f64_from_map(map, "zobrist_zero_probability"));
-        let count_bound_to_expanded =
-            load_bool_from_map(map, "count_bound_to_expanded").unwrap_or(false);
 
         Self {
             f_evaluator_type,
             buffer_size,
             hash_type,
             abstraction_probability,
-            count_bound_to_expanded,
-        }
-    }
-}
-
-impl InitiationParameters {
-    pub fn load_from_map(map: &LinkedHashMap<Yaml, Yaml>) -> Self {
-        let time_limit = map
-            .get(&yaml_rust::Yaml::from_str("time_limit"))
-            .map(|value| didp_yaml::util::get_numeric(value).unwrap());
-        let node_limit = load_usize_from_map(map, "node_limit");
-        let quiet = load_bool_from_map(map, "quiet").unwrap_or(false);
-
-        Self {
-            time_limit,
-            node_limit,
-            quiet,
-        }
-    }
-}
-
-impl AahParameters {
-    pub fn load_from_map(map: &LinkedHashMap<Yaml, Yaml>) -> Self {
-        let max_probability = load_f64_from_map(map, "max_probability").unwrap_or(1.0);
-        let step_size = load_f64_from_map(map, "step_size").unwrap_or(0.1);
-        let threshold_ratio_to_average = load_f64_from_map(map, "threshold_ratio_to_average");
-        let threshold_ratio_to_base = load_f64_from_map(map, "threshold_ratio_to_base");
-
-        Self {
-            max_probability,
-            step_size,
-            threshold_ratio_to_average,
-            threshold_ratio_to_base,
         }
     }
 }

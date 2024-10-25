@@ -11,19 +11,23 @@ use std::hash::Hash;
 use std::rc::Rc;
 use std::str::FromStr;
 
-use crate::{
-    bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
-};
+use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
+use crate::node_communicator::TimeStampedNodeDepthCommunicator;
+use crate::open_list;
 use crate::{bfs_node_with_distributed_id_chain::NodeGenerationResult, is_float::IsFloat};
 use crate::{
     distributed_id_chain::DistributedTransitionIdChain,
     mpi_anytime_search::{
-        MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters,
+        MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters, TAG_OFFSET,
     },
 };
-use crate::{initiation, open_list};
-use crate::{node_communicator::TimeStampedNodeDepthCommunicator, InitiationResult};
 use crate::{node_message::NodeMessage, statistics::Statistics};
+
+const TAG_NODE: Tag = TAG_OFFSET;
+const TAG_TIME_OUT: Tag = TAG_OFFSET + 1;
+const TAG_TIME_OUT_ACK: Tag = TAG_OFFSET + 2;
+const TAG_TERMINATION_DETECTION: Tag = TAG_OFFSET + 3;
+const TAG_TERMINATE: Tag = TAG_OFFSET + 4;
 
 pub struct HdHac<'a, T, N, M, L, R, B, F, V = Transition>
 where
@@ -75,17 +79,6 @@ where
     Transition: From<V> + From<TransitionWithId<V>>,
     TransitionWithId<V>: Clone,
 {
-    const TAG_N_INITIAL_CLOSED_NODES: Tag =
-        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET;
-    const TAG_N_INITIAL_OPEN_NODES: Tag =
-        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 1;
-    const TAG_NODE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 2;
-    const TAG_TIME_OUT: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 3;
-    const TAG_TIME_OUT_ACK: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 4;
-    const TAG_TERMINATION_DETECTION: Tag =
-        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 5;
-    const TAG_TERMINATE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 6;
-
     /// Creates a new HDACPS solver.
     pub fn new(
         input: SearchInput<'a, M, TransitionWithId<V>>,
@@ -107,8 +100,8 @@ where
 
         let node_communicator = TimeStampedNodeDepthCommunicator::new(
             communicator,
-            Self::TAG_NODE,
-            Self::TAG_TERMINATION_DETECTION,
+            TAG_NODE,
+            TAG_TERMINATION_DETECTION,
             model.clone(),
         );
 
@@ -144,120 +137,6 @@ where
 
     pub fn set_time_offset(&mut self, offset: f64) {
         self.search.set_time_offset(offset);
-    }
-
-    pub fn initiate_without_distributing_nodes(
-        &mut self,
-        initiation_result: InitiationResult<T, N, V>,
-    ) {
-        self.search.set_statistics(initiation_result.statistics);
-        self.search.set_solution(initiation_result.solution);
-    }
-
-    pub fn distriute_initial_nodes(
-        &mut self,
-        initiation_result: InitiationResult<T, N, V>,
-        ranks: &[Rank],
-    ) {
-        self.search
-            .set_id_to_chain_node(initiation_result.id_to_chain_node);
-        self.search.set_statistics(initiation_result.statistics);
-        self.search.set_solution(initiation_result.solution);
-        self.search.reset_generated();
-
-        let mut rank_to_open_buffer = vec![Vec::default(); self.communicator.size() as usize];
-        let mut rank_to_closed_buffer = vec![Vec::default(); self.communicator.size() as usize];
-
-        for ((_, v), rank) in initiation_result.nodes.into_iter().zip(ranks) {
-            if *rank == self.communicator.rank() {
-                for node in v {
-                    let depth =
-                        initiation::get_depth(node.as_ref(), &initiation_result.id_to_depth);
-
-                    if depth == 0 {
-                        continue;
-                    }
-
-                    if node.is_closed() {
-                        self.search.close_node((*node).clone(), &mut self.registry);
-                    } else {
-                        self.open_node((*node).clone(), depth);
-                    }
-                }
-            } else {
-                for node in v {
-                    let depth =
-                        initiation::get_depth(node.as_ref(), &initiation_result.id_to_depth);
-
-                    if depth == 0 {
-                        continue;
-                    }
-
-                    let message = M::from((*node).clone());
-                    message.set_parent_rank(self.communicator.rank());
-
-                    if node.is_closed() {
-                        rank_to_closed_buffer[*rank as usize].push((message, depth));
-                    } else {
-                        rank_to_open_buffer[*rank as usize].push((message, depth));
-                    }
-                }
-            }
-        }
-
-        for (rank, buffer) in rank_to_closed_buffer.into_iter().enumerate() {
-            let rank = rank as Rank;
-
-            if rank != self.communicator.rank() {
-                let destination_process = self.communicator.process_at_rank(rank);
-                let n_nodes = buffer.len();
-                destination_process.send_with_tag(&n_nodes, Self::TAG_N_INITIAL_CLOSED_NODES);
-
-                for (message, depth) in buffer {
-                    self.node_communicator.send(rank, &message, depth);
-                }
-            }
-        }
-
-        for (rank, buffer) in rank_to_open_buffer.into_iter().enumerate() {
-            let rank = rank as Rank;
-
-            if rank != self.communicator.rank() {
-                let destination_process = self.communicator.process_at_rank(rank);
-                let n_nodes = buffer.len();
-                destination_process.send_with_tag(&n_nodes, Self::TAG_N_INITIAL_OPEN_NODES);
-
-                for (message, depth) in buffer {
-                    self.node_communicator.send(rank, &message, depth);
-                }
-            }
-        }
-    }
-
-    pub fn receive_initial_nodes(&mut self, source_rank: Rank) {
-        let source = self.communicator.process_at_rank(source_rank);
-        let mut n_closed_nodes = 0;
-        source
-            .receive_into_with_tag::<usize>(&mut n_closed_nodes, Self::TAG_N_INITIAL_CLOSED_NODES);
-
-        for _ in 0..n_closed_nodes {
-            self.search.increment_received();
-
-            if let Some((node, _)) = self
-                .node_communicator
-                .receive(source_rank, self.search.get_primal_bound())
-            {
-                let node = N::from(node);
-                self.search.close_node(node, &mut self.registry);
-            }
-        }
-
-        let mut n_open_nodes = 0;
-        source.receive_into_with_tag::<usize>(&mut n_open_nodes, Self::TAG_N_INITIAL_OPEN_NODES);
-
-        for _ in 0..n_open_nodes {
-            self.receive_node(source_rank);
-        }
     }
 
     pub fn close_root_node(&mut self, node: M) {
@@ -302,7 +181,7 @@ where
             if destination_rank != self.communicator.rank() {
                 let buffer: [u8; 0] = [];
                 let destination_process = self.communicator.process_at_rank(destination_rank);
-                destination_process.buffered_send_with_tag(&buffer, Self::TAG_TIME_OUT);
+                destination_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT);
                 self.n_remaining_time_out_ack += 1;
             }
         }
@@ -311,16 +190,16 @@ where
     fn receive_time_out(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TIME_OUT);
+        source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT);
         self.is_time_out = true;
         self.local_dual_bound = self.compute_local_dual_bound();
-        source_process.buffered_send_with_tag(&buffer, Self::TAG_TIME_OUT_ACK);
+        source_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT_ACK);
     }
 
     fn receive_time_out_ack(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TIME_OUT_ACK);
+        source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT_ACK);
         self.n_remaining_time_out_ack -= 1;
     }
 
@@ -329,7 +208,7 @@ where
             if destination_rank != self.communicator.rank() {
                 let buffer: [u8; 0] = [];
                 let destination_process = self.communicator.process_at_rank(destination_rank);
-                destination_process.buffered_send_with_tag(&buffer, Self::TAG_TERMINATE);
+                destination_process.buffered_send_with_tag(&buffer, TAG_TERMINATE);
             }
         }
 
@@ -339,7 +218,7 @@ where
     fn receive_terminate(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TERMINATE);
+        source_process.receive_into_with_tag(&mut buffer, TAG_TERMINATE);
         self.is_terminated = true;
     }
 
@@ -373,11 +252,11 @@ where
             let tag = status.tag();
 
             match tag {
-                Self::TAG_NODE => self.receive_node(source_rank),
-                Self::TAG_TIME_OUT => self.receive_time_out(source_rank),
-                Self::TAG_TIME_OUT_ACK => self.receive_time_out_ack(source_rank),
-                Self::TAG_TERMINATION_DETECTION => self.receive_termination_detection(source_rank),
-                Self::TAG_TERMINATE => self.receive_terminate(source_rank),
+                TAG_NODE => self.receive_node(source_rank),
+                TAG_TIME_OUT => self.receive_time_out(source_rank),
+                TAG_TIME_OUT_ACK => self.receive_time_out_ack(source_rank),
+                TAG_TERMINATION_DETECTION => self.receive_termination_detection(source_rank),
+                TAG_TERMINATE => self.receive_terminate(source_rank),
                 _ => self.search.receive_message(source_rank, tag),
             }
         }
@@ -520,9 +399,5 @@ where
         solution.time = self.search.elapsed_time();
 
         (solution, statistics)
-    }
-
-    pub fn gather_bound_to_expanded(&self) -> Vec<KeyValueStatistics<T, usize>> {
-        self.search.gather_bound_to_expanded()
     }
 }

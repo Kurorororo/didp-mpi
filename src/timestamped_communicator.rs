@@ -4,7 +4,7 @@ use mpi::{
     Address, Count, Rank, Tag,
 };
 use std::mem;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, IntoBytes};
 
 use crate::mpi_termination_detector::MpiTerminationDetector;
 
@@ -53,7 +53,8 @@ where
         let mut v = unsafe { MutView::with_count_and_datatype(buffer, 1, datatype) };
         let source_process = self.communicator.process_at_rank(source);
         source_process.receive_into_with_tag(&mut v, tag);
-        let tstamp = usize::read_from(&buffer[offset..offset + mem::size_of::<usize>()]).unwrap();
+        let tstamp =
+            usize::read_from_bytes(&buffer[offset..offset + mem::size_of::<usize>()]).unwrap();
         self.termination_detector.notify_received(tstamp);
     }
 

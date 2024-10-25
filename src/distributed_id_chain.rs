@@ -2,7 +2,7 @@ use mpi::{datatype::DatatypeRef, traits::*, Address, Count, Rank};
 use std::cell::Cell;
 use std::mem;
 use std::rc::Rc;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, IntoBytes};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DistributedTransitionIdChainData {
@@ -125,19 +125,19 @@ impl DistributedTransitionIdChain {
         let mut offset = 0;
 
         let size = mem::size_of::<Rank>();
-        let parent_rank = Rank::read_from(&buffer[offset..offset + size]).unwrap();
+        let parent_rank = Rank::read_from_bytes(&buffer[offset..offset + size]).unwrap();
         offset += size;
 
         let size = mem::size_of::<usize>();
-        let parent_chain_id = usize::read_from(&buffer[offset..offset + size]).unwrap();
+        let parent_chain_id = usize::read_from_bytes(&buffer[offset..offset + size]).unwrap();
         offset += size;
 
         let size = mem::size_of::<usize>();
-        let last_transition_id = usize::read_from(&buffer[offset..offset + size]).unwrap();
+        let last_transition_id = usize::read_from_bytes(&buffer[offset..offset + size]).unwrap();
         offset += size;
 
         let size = mem::size_of::<u8>();
-        let last_forced = u8::read_from(&buffer[offset..offset + size]).unwrap();
+        let last_forced = u8::read_from_bytes(&buffer[offset..offset + size]).unwrap();
         let last_forced = last_forced == 1u8;
 
         DistributedTransitionIdChain {

@@ -211,20 +211,3 @@ where
 
     (input, evaluators)
 }
-
-pub fn compute_variance(values: &[usize]) -> f64 {
-    let n = values.len() as f64;
-    let sum = values.iter().sum::<usize>() as f64;
-    let mean = sum / n;
-    let variance = values
-        .iter()
-        .map(|x| (*x as f64 - mean).powi(2))
-        .sum::<f64>()
-        / n;
-
-    variance
-}
-
-pub fn compute_stddev(values: &[usize]) -> f64 {
-    compute_variance(values).sqrt()
-}

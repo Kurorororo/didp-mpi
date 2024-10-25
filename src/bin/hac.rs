@@ -1,4 +1,4 @@
-use didp_mpi::{Hac, KeyValueStatistics};
+use didp_mpi::Hac;
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
     prelude::*,
@@ -55,11 +55,6 @@ where
         "Time to the final solution: {}s",
         time_keeper.elapsed_time()
     );
-
-    if count_bound_to_expanded {
-        let bound_to_expanded = KeyValueStatistics::from(solver.get_bound_to_expanded());
-        KeyValueStatistics::dump_to_csv(&[bound_to_expanded], "bound_to_expanded.csv").unwrap();
-    }
 }
 
 fn main() {

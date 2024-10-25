@@ -5,7 +5,7 @@ use mpi::{
     {Address, Count},
 };
 use std::mem;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, IntoBytes};
 
 /// Singleton struct for serialization and deserialization of a state and its g-, h-, and f-values.
 #[derive(Debug)]
@@ -203,7 +203,7 @@ impl StateSerializer {
                 let size = Self::compute_n_blocks(bits) * mem::size_of::<u32>();
                 let mut v = Set::with_capacity(bits);
                 v.as_mut_slice()
-                    .as_bytes_mut()
+                    .as_mut_bytes()
                     .copy_from_slice(&buffer[offset..offset + size]);
                 offset += size;
                 v
@@ -213,7 +213,7 @@ impl StateSerializer {
         let element_variables = (0..self.n_element_variables)
             .map(|_| {
                 let size = mem::size_of::<usize>();
-                let v = usize::read_from(&buffer[offset..offset + size]).unwrap();
+                let v = usize::read_from_bytes(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
             })
@@ -222,7 +222,7 @@ impl StateSerializer {
         let integer_variables = (0..self.n_integer_variables)
             .map(|_| {
                 let size = mem::size_of::<Integer>();
-                let v = Integer::read_from(&buffer[offset..offset + size]).unwrap();
+                let v = Integer::read_from_bytes(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
             })
@@ -231,7 +231,7 @@ impl StateSerializer {
         let continuous_variables = (0..self.n_continuous_variables)
             .map(|_| {
                 let size = mem::size_of::<Continuous>();
-                let v = Continuous::read_from(&buffer[offset..offset + size]).unwrap();
+                let v = Continuous::read_from_bytes(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
             })
@@ -240,7 +240,7 @@ impl StateSerializer {
         let element_resource_variables = (0..self.n_element_resource_variables)
             .map(|_| {
                 let size = mem::size_of::<Element>();
-                let v = Element::read_from(&buffer[offset..offset + size]).unwrap();
+                let v = Element::read_from_bytes(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
             })
@@ -249,7 +249,7 @@ impl StateSerializer {
         let integer_resource_variables = (0..self.n_integer_resource_variables)
             .map(|_| {
                 let size = mem::size_of::<Integer>();
-                let v = Integer::read_from(&buffer[offset..offset + size]).unwrap();
+                let v = Integer::read_from_bytes(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
             })
@@ -258,7 +258,7 @@ impl StateSerializer {
         let continuous_resource_variables = (0..self.n_continuous_resource_variables)
             .map(|_| {
                 let size = mem::size_of::<Continuous>();
-                let v = Continuous::read_from(&buffer[offset..offset + size]).unwrap();
+                let v = Continuous::read_from_bytes(&buffer[offset..offset + size]).unwrap();
                 offset += size;
                 v
             })

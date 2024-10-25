@@ -110,49 +110,8 @@ fn main_with_cost_type<T>(
     let f_evaluator_type = additional_parameters.f_evaluator_type;
 
     match additional_parameters.hash_type {
-        HashType::Wy => {
-            let hash_function = didp_mpi::create_wyhash();
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                parameters,
-                f_evaluator_type,
-                hash_function,
-                time_keeper,
-            );
-        }
-        HashType::MaskedWy => {
-            let masks = didp_mpi::create_set_masks(
-                &model,
-                additional_parameters.abstraction_probability.unwrap_or(0.0),
-            );
-            let hash_function = didp_mpi::create_masked_wyhash(masks);
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                parameters,
-                f_evaluator_type,
-                hash_function,
-                time_keeper,
-            );
-        }
         HashType::Fx => {
             let hash_function = didp_mpi::create_fx_hash();
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                parameters,
-                f_evaluator_type,
-                hash_function,
-                time_keeper,
-            );
-        }
-        HashType::MaskedFx => {
-            let masks = didp_mpi::create_set_masks(
-                &model,
-                additional_parameters.abstraction_probability.unwrap_or(0.0),
-            );
-            let hash_function = didp_mpi::create_masked_fx_hash(masks);
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
@@ -168,49 +127,6 @@ fn main_with_cost_type<T>(
                 additional_parameters.abstraction_probability.unwrap_or(0.0),
             );
             let hash_function = didp_mpi::create_bytewise_zobrist_hash(table);
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                parameters,
-                f_evaluator_type,
-                hash_function,
-                time_keeper,
-            );
-        }
-        HashType::SetZobristWithOthers => {
-            let table = didp_mpi::create_abstract_bytewise_random_table(
-                &model,
-                additional_parameters.abstraction_probability.unwrap_or(0.0),
-            );
-            let hash_function = didp_mpi::create_bytewise_zobrist_hash_with_others(table);
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                parameters,
-                f_evaluator_type,
-                hash_function,
-                time_keeper,
-            );
-        }
-        HashType::ThreeBitsFieldZobrist => {
-            let hash_function = didp_mpi::create_3bits_field_zobrist_hash(
-                &model,
-                additional_parameters.abstraction_probability.unwrap_or(0.0),
-            );
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                parameters,
-                f_evaluator_type,
-                hash_function,
-                time_keeper,
-            );
-        }
-        HashType::FourBitsFieldZobrist => {
-            let hash_function = didp_mpi::create_4bits_field_zobrist_hash(
-                &model,
-                additional_parameters.abstraction_probability.unwrap_or(0.0),
-            );
             main_with_cost_type_and_hash_function(
                 universe,
                 model,

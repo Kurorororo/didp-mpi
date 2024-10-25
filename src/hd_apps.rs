@@ -15,9 +15,8 @@ use std::rc::Rc;
 use std::str::FromStr;
 
 use crate::is_float::IsFloat;
-use crate::key_value_statistics::KeyValueStatistics;
 use crate::mpi_anytime_search::{
-    MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters,
+    MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters, TAG_OFFSET,
 };
 use crate::node_communicator::TimeStampedNodeCommunicator;
 use crate::node_message::NodeMessage;
@@ -26,6 +25,12 @@ use crate::{
     bfs_node_with_distributed_id_chain::{BfsNodeWithDistributedIdChain, NodeGenerationResult},
     distributed_id_chain::DistributedTransitionIdChain,
 };
+
+const TAG_NODE: Tag = TAG_OFFSET;
+const TAG_TIME_OUT: Tag = TAG_OFFSET + 1;
+const TAG_TIME_OUT_ACK: Tag = TAG_OFFSET + 2;
+const TAG_TERMINATION_DETECTION: Tag = TAG_OFFSET + 3;
+const TAG_TERMINATE: Tag = TAG_OFFSET + 4;
 
 pub struct HdApps<'a, T, N, M, L, R, B, F, V = Transition>
 where
@@ -78,13 +83,6 @@ where
     Transition: From<V> + From<TransitionWithId<V>>,
     TransitionWithId<V>: Clone,
 {
-    const TAG_NODE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET;
-    const TAG_TIME_OUT: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 1;
-    const TAG_TIME_OUT_ACK: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 2;
-    const TAG_TERMINATION_DETECTION: Tag =
-        MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 3;
-    const TAG_TERMINATE: Tag = MpiAnytimeSearch::<'a, T, N, M, L, R, B, F, V>::TAG_OFFSET + 4;
-
     /// Creates a new HDAPPS solver.
     pub fn new(
         input: SearchInput<'a, M, TransitionWithId<V>>,
@@ -107,8 +105,8 @@ where
 
         let node_communicator = TimeStampedNodeCommunicator::new(
             communicator,
-            Self::TAG_NODE,
-            Self::TAG_TERMINATION_DETECTION,
+            TAG_NODE,
+            TAG_TERMINATION_DETECTION,
             model.clone(),
         );
 
@@ -173,7 +171,7 @@ where
             if destination_rank != self.communicator.rank() {
                 let buffer: [u8; 0] = [];
                 let destination_process = self.communicator.process_at_rank(destination_rank);
-                destination_process.buffered_send_with_tag(&buffer, Self::TAG_TIME_OUT);
+                destination_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT);
                 self.n_remaining_time_out_ack += 1;
             }
         }
@@ -182,16 +180,16 @@ where
     fn receive_time_out(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TIME_OUT);
+        source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT);
         self.is_time_out = true;
         self.local_dual_bound = self.compute_local_dual_bound();
-        source_process.buffered_send_with_tag(&buffer, Self::TAG_TIME_OUT_ACK);
+        source_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT_ACK);
     }
 
     fn receive_time_out_ack(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TIME_OUT_ACK);
+        source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT_ACK);
         self.n_remaining_time_out_ack -= 1;
     }
 
@@ -200,7 +198,7 @@ where
             if destination_rank != self.communicator.rank() {
                 let buffer: [u8; 0] = [];
                 let destination_process = self.communicator.process_at_rank(destination_rank);
-                destination_process.buffered_send_with_tag(&buffer, Self::TAG_TERMINATE);
+                destination_process.buffered_send_with_tag(&buffer, TAG_TERMINATE);
             }
         }
 
@@ -210,7 +208,7 @@ where
     fn receive_terminate(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, Self::TAG_TERMINATE);
+        source_process.receive_into_with_tag(&mut buffer, TAG_TERMINATE);
         self.is_terminated = true;
     }
 
@@ -247,11 +245,11 @@ where
             let tag = status.tag();
 
             match tag {
-                Self::TAG_NODE => self.receive_node(source_rank),
-                Self::TAG_TIME_OUT => self.receive_time_out(source_rank),
-                Self::TAG_TIME_OUT_ACK => self.receive_time_out_ack(source_rank),
-                Self::TAG_TERMINATION_DETECTION => self.receive_termination_detection(source_rank),
-                Self::TAG_TERMINATE => self.receive_terminate(source_rank),
+                TAG_NODE => self.receive_node(source_rank),
+                TAG_TIME_OUT => self.receive_time_out(source_rank),
+                TAG_TIME_OUT_ACK => self.receive_time_out_ack(source_rank),
+                TAG_TERMINATION_DETECTION => self.receive_termination_detection(source_rank),
+                TAG_TERMINATE => self.receive_terminate(source_rank),
                 _ => self.search.receive_message(source_rank, tag),
             }
         }
@@ -463,9 +461,5 @@ where
         solution.time = self.search.elapsed_time();
 
         (solution, statistics)
-    }
-
-    pub fn gather_bound_to_expanded(&self) -> Vec<KeyValueStatistics<T, usize>> {
-        self.search.gather_bound_to_expanded()
     }
 }

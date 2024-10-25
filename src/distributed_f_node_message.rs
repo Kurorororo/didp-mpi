@@ -16,7 +16,7 @@ use dypdl_heuristic_search::search_algorithm::{
 use mpi::{datatype::DatatypeRef, traits::*, Address, Count, Rank};
 use std::mem;
 use std::rc::Rc;
-use zerocopy::{AsBytes, FromBytes};
+use zerocopy::{FromBytes, IntoBytes};
 
 /// Node ordered by the f-value and associated with a transition ids chain
 /// to be sent to another thread via message passing.
@@ -165,29 +165,29 @@ where
 
         let (g, h, f) = if T::is_float() {
             let size = mem::size_of::<Continuous>();
-            let g = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
+            let g = T::from(Continuous::read_from_bytes(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
             let size = mem::size_of::<Continuous>();
-            let h = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
+            let h = T::from(Continuous::read_from_bytes(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
             let size = mem::size_of::<Continuous>();
-            let f = T::from(Continuous::read_from(&buffer[offset..offset + size]).unwrap());
+            let f = T::from(Continuous::read_from_bytes(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
             (g, h, f)
         } else {
             let size = mem::size_of::<Integer>();
-            let g = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
+            let g = T::from(Integer::read_from_bytes(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
             let size = mem::size_of::<Integer>();
-            let h = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
+            let h = T::from(Integer::read_from_bytes(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
             let size = mem::size_of::<Integer>();
-            let f = T::from(Integer::read_from(&buffer[offset..offset + size]).unwrap());
+            let f = T::from(Integer::read_from_bytes(&buffer[offset..offset + size]).unwrap());
             offset += size;
 
             (g, h, f)
@@ -212,11 +212,11 @@ where
         let bound = if T::is_float() {
             let size = mem::size_of::<Continuous>();
             let offset = serializer.get_total_size() + 2 * size;
-            T::from(Continuous::read_from(&data[offset..offset + size]).unwrap())
+            T::from(Continuous::read_from_bytes(&data[offset..offset + size]).unwrap())
         } else {
             let size = mem::size_of::<Integer>();
             let offset = serializer.get_total_size() + 2 * size;
-            T::from(Integer::read_from(&data[offset..offset + size]).unwrap())
+            T::from(Integer::read_from_bytes(&data[offset..offset + size]).unwrap())
         };
 
         let bound = if model.reduce_function == ReduceFunction::Min {

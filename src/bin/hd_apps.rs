@@ -1,6 +1,6 @@
 use didp_mpi::{
-    AdditionalCommonParameters, HashType, HdApps, IsFloat, KeyValueStatistics,
-    MpiAnytimeSearchParameters, NodeMessage, Statistics,
+    AdditionalCommonParameters, HashType, HdApps, IsFloat, MpiAnytimeSearchParameters, NodeMessage,
+    Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -27,7 +27,6 @@ struct AppsParameters<T> {
     parameters: Parameters<T>,
     progressive_parameters: ProgressiveSearchParameters,
     f_evaluator_type: FEvaluatorType,
-    count_bound_to_expanded: bool,
 }
 
 fn main_with_cost_type_and_hash_function<T, H>(
@@ -45,7 +44,6 @@ fn main_with_cost_type_and_hash_function<T, H>(
     let mut parameters = apps_parameters.parameters;
     let progressive_parameters = apps_parameters.progressive_parameters;
     let f_evaluator_type = apps_parameters.f_evaluator_type;
-    let count_bound_to_expanded = apps_parameters.count_bound_to_expanded;
 
     let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evaluators(
         model,
@@ -80,7 +78,6 @@ fn main_with_cost_type_and_hash_function<T, H>(
         controller_rank: 0,
         solution_filename,
         history_filename,
-        count_bound_to_expanded,
         parameters,
         dual_bound: None,
     };
@@ -110,14 +107,6 @@ fn main_with_cost_type_and_hash_function<T, H>(
         didp_mpi::dump_statistics(&statistics_list);
         Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
     }
-
-    if count_bound_to_expanded {
-        let bound_to_expanded = solver.gather_bound_to_expanded();
-
-        if communicator.rank() == 0 {
-            KeyValueStatistics::dump_to_csv(&bound_to_expanded, "bound_to_expanded.csv").unwrap();
-        }
-    }
 }
 
 fn main_with_cost_type<T>(
@@ -146,50 +135,11 @@ fn main_with_cost_type<T>(
         parameters,
         progressive_parameters,
         f_evaluator_type,
-        count_bound_to_expanded: additional_parameters.count_bound_to_expanded,
     };
 
     match additional_parameters.hash_type {
-        HashType::Wy => {
-            let hash_function = didp_mpi::create_wyhash();
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                hash_function,
-                apps_parameters,
-                time_keeper,
-            );
-        }
-        HashType::MaskedWy => {
-            let masks = didp_mpi::create_set_masks(
-                &model,
-                additional_parameters.abstraction_probability.unwrap_or(0.0),
-            );
-            let hash_function = didp_mpi::create_masked_wyhash(masks);
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                hash_function,
-                apps_parameters,
-                time_keeper,
-            );
-        }
         HashType::Fx => {
             let hash_function = didp_mpi::create_fx_hash();
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                hash_function,
-                apps_parameters,
-                time_keeper,
-            );
-        }
-        HashType::MaskedFx => {
-            let masks = didp_mpi::create_set_masks(
-                &model,
-                additional_parameters.abstraction_probability.unwrap_or(0.0),
-            );
-            let hash_function = didp_mpi::create_masked_fx_hash(masks);
             main_with_cost_type_and_hash_function(
                 universe,
                 model,
@@ -204,46 +154,6 @@ fn main_with_cost_type<T>(
                 additional_parameters.abstraction_probability.unwrap_or(0.0),
             );
             let hash_function = didp_mpi::create_bytewise_zobrist_hash(table);
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                hash_function,
-                apps_parameters,
-                time_keeper,
-            );
-        }
-        HashType::SetZobristWithOthers => {
-            let table = didp_mpi::create_abstract_bytewise_random_table(
-                &model,
-                additional_parameters.abstraction_probability.unwrap_or(0.0),
-            );
-            let hash_function = didp_mpi::create_bytewise_zobrist_hash_with_others(table);
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                hash_function,
-                apps_parameters,
-                time_keeper,
-            );
-        }
-        HashType::ThreeBitsFieldZobrist => {
-            let hash_function = didp_mpi::create_3bits_field_zobrist_hash(
-                &model,
-                additional_parameters.abstraction_probability.unwrap_or(0.0),
-            );
-            main_with_cost_type_and_hash_function(
-                universe,
-                model,
-                hash_function,
-                apps_parameters,
-                time_keeper,
-            );
-        }
-        HashType::FourBitsFieldZobrist => {
-            let hash_function = didp_mpi::create_4bits_field_zobrist_hash(
-                &model,
-                additional_parameters.abstraction_probability.unwrap_or(0.0),
-            );
             main_with_cost_type_and_hash_function(
                 universe,
                 model,

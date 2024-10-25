@@ -15,7 +15,6 @@ use mpi::{
     traits::*,
     Address, Rank, Tag,
 };
-use rustc_hash::FxHashMap;
 use std::fmt::{Debug, Display};
 use std::fs::{File, OpenOptions};
 use std::hash::Hash;
@@ -24,19 +23,33 @@ use std::marker::PhantomData;
 use std::rc::Rc;
 use std::str::FromStr;
 
+use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
+use crate::distributed_id_chain::DistributedTransitionIdChain;
 use crate::is_float::IsFloat;
 use crate::node_message::NodeMessage;
 use crate::partial_solution;
 use crate::partial_solution::PartialSolutionTags;
 use crate::statistics::Statistics;
-use crate::{
-    bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain, KeyValueStatistics,
-};
 use crate::{bfs_node_with_distributed_id_chain::NodeGenerationResult, io};
-use crate::{
-    distributed_id_chain::DistributedTransitionIdChain,
-    key_value_statistics::KeyValueStatisticsTags,
+
+const TAG_PRIMAL_BOUND: Tag = 0;
+const TAG_PRIMAL_BOUND_ACK: Tag = 1;
+const TAG_PARTIAL_SOLUTION_REQUEST: Tag = 2;
+const TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA: Tag = 3;
+const TAG_PARTIAL_SOLUTION: PartialSolutionTags = PartialSolutionTags {
+    fixed_length_data: 3,
+    transition_ids: 4,
+    transition_forced: 5,
 };
+const TAG_N_TRANSITION_IDS_AND_COST: Tag = 6;
+const TAG_REVERSE_TRANSITION_IDS: Tag = 7;
+const TAG_REVERSE_TRANSITION_FORCED: Tag = 8;
+const TAG_SOLUTION_ACK: Tag = 9;
+const TAG_FINAL_SOLUTION_INFORMATION: Tag = 10;
+const TAG_FINAL_TRANSITION_IDS_REQUEST: Tag = 11;
+const TAG_FINAL_TRANSITION_IDS: Tag = 12;
+const TAG_FINAL_TRANSITION_FORCED: Tag = 13;
+pub const TAG_OFFSET: Tag = 14;
 
 #[derive(Copy, Clone, Debug, Default)]
 struct NTransitionIdsAndCostForSend<T>(usize, T);
@@ -212,7 +225,6 @@ where
     pub controller_rank: Rank,
     pub solution_filename: Option<String>,
     pub history_filename: Option<String>,
-    pub count_bound_to_expanded: bool,
     pub parameters: Parameters<T>,
     pub dual_bound: Option<T>,
 }
@@ -230,11 +242,9 @@ where
     base_cost_evaluator: B,
     suffix: &'a [TransitionWithId<V>],
     primal_bound: Option<T>,
-    bound_to_expanded: FxHashMap<T, usize>,
     solution: Solution<T, TransitionWithId<V>>,
     time_offset: f64,
     statistics: Statistics,
-    count_bound_to_expanded: bool,
     local_solution_cost: Option<T>,
     reverse_transition_ids: Vec<usize>,
     reverse_transition_forced: Vec<bool>,
@@ -259,30 +269,6 @@ where
     Transition: From<V> + From<TransitionWithId<V>>,
     TransitionWithId<V>: Clone,
 {
-    const TAG_PRIMAL_BOUND: Tag = 0;
-    const TAG_PRIMAL_BOUND_ACK: Tag = 1;
-    const TAG_PARTIAL_SOLUTION_REQUEST: Tag = 2;
-    const TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA: Tag = 3;
-    const TAG_PARTIAL_SOLUTION: PartialSolutionTags = PartialSolutionTags {
-        fixed_length_data: 3,
-        transition_ids: 4,
-        transition_forced: 5,
-    };
-    const TAG_N_TRANSITION_IDS_AND_COST: Tag = 6;
-    const TAG_REVERSE_TRANSITION_IDS: Tag = 7;
-    const TAG_REVERSE_TRANSITION_FORCED: Tag = 8;
-    const TAG_SOLUTION_ACK: Tag = 9;
-    const TAG_FINAL_SOLUTION_INFORMATION: Tag = 10;
-    const TAG_FINAL_TRANSITION_IDS_REQUEST: Tag = 11;
-    const TAG_FINAL_TRANSITION_IDS: Tag = 12;
-    const TAG_FINAL_TRANSITION_FORCED: Tag = 13;
-    const TAG_BOUND_TO_EXPANDED: KeyValueStatisticsTags = KeyValueStatisticsTags {
-        n_keys_tag: 14,
-        keys_tag: 15,
-        values_tag: 16,
-    };
-    pub const TAG_OFFSET: Tag = 17;
-
     pub fn new(
         generator: &SuccessorGenerator<TransitionWithId<V>>,
         suffix: &'a [TransitionWithId<V>],
@@ -311,7 +297,6 @@ where
         let history_filename = parameters.history_filename;
         let primal_bound = parameters.parameters.primal_bound;
         let quiet = parameters.parameters.quiet;
-        let count_bound_to_expanded = parameters.count_bound_to_expanded;
 
         let history_file = history_filename.map(|filename| {
             OpenOptions::new()
@@ -336,11 +321,9 @@ where
             base_cost_evaluator,
             suffix,
             primal_bound,
-            count_bound_to_expanded,
             solution,
             time_offset: 0.0,
             statistics: Statistics::default(),
-            bound_to_expanded: FxHashMap::default(),
             local_solution_cost: None,
             reverse_transition_ids: Vec::default(),
             reverse_transition_forced: Vec::default(),
@@ -354,22 +337,6 @@ where
             quiet,
             time_keeper,
         }
-    }
-
-    pub fn set_solution(&mut self, solution: Solution<T, TransitionWithId<V>>) {
-        self.solution = solution;
-        self.primal_bound = self.solution.cost;
-        self.local_solution_cost = self.solution.cost;
-        self.broadcast_primal_bound();
-    }
-
-    pub fn set_statistics(&mut self, statistics: Statistics) {
-        self.statistics = statistics;
-    }
-
-    pub fn reset_generated(&mut self) {
-        self.solution.generated = 0;
-        self.statistics.generated = 0;
     }
 
     pub fn set_time_offset(&mut self, offset: f64) {
@@ -399,7 +366,7 @@ where
             || self.n_solution_ack_remaining > 0
     }
 
-    pub fn increment_expanded(&mut self, bound: Option<T>) {
+    pub fn increment_expanded(&mut self) {
         self.statistics.last_expanded_timestamp = self.elapsed_time();
 
         if self.statistics.expanded == 0 {
@@ -408,15 +375,6 @@ where
 
         self.solution.expanded += 1;
         self.statistics.expanded += 1;
-
-        if self.count_bound_to_expanded {
-            if let Some(bound) = bound {
-                self.bound_to_expanded
-                    .entry(bound)
-                    .and_modify(|v| *v += 1)
-                    .or_insert(1);
-            }
-        }
     }
 
     pub fn increment_generated(&mut self) {
@@ -503,31 +461,25 @@ where
             cost,
         };
         let destination = self.communicator.process_at_rank(self.root_rank);
-        message.send(&destination, Self::TAG_N_TRANSITION_IDS_AND_COST);
-        destination.buffered_send_with_tag(
-            &self.reverse_transition_ids,
-            Self::TAG_REVERSE_TRANSITION_IDS,
-        );
+        message.send(&destination, TAG_N_TRANSITION_IDS_AND_COST);
+        destination
+            .buffered_send_with_tag(&self.reverse_transition_ids, TAG_REVERSE_TRANSITION_IDS);
         destination.buffered_send_with_tag(
             &self.reverse_transition_forced,
-            Self::TAG_REVERSE_TRANSITION_FORCED,
+            TAG_REVERSE_TRANSITION_FORCED,
         );
         self.n_solution_ack_remaining += 1;
     }
 
     fn receive_solution(&mut self, source_rank: Rank) {
         let source = self.communicator.process_at_rank(source_rank);
-        let message =
-            NTransitionIdsAndCost::<T>::receive(&source, Self::TAG_N_TRANSITION_IDS_AND_COST);
+        let message = NTransitionIdsAndCost::<T>::receive(&source, TAG_N_TRANSITION_IDS_AND_COST);
         let n = message.n_transitions;
         let cost = message.cost;
         let mut tmp_transition_ids = vec![0; n];
         let mut tmp_transition_forced = vec![false; n];
-        source.receive_into_with_tag(&mut tmp_transition_ids, Self::TAG_REVERSE_TRANSITION_IDS);
-        source.receive_into_with_tag(
-            &mut tmp_transition_forced,
-            Self::TAG_REVERSE_TRANSITION_FORCED,
-        );
+        source.receive_into_with_tag(&mut tmp_transition_ids, TAG_REVERSE_TRANSITION_IDS);
+        source.receive_into_with_tag(&mut tmp_transition_forced, TAG_REVERSE_TRANSITION_FORCED);
 
         if !data_structure::exceed_bound(&self.model, cost, self.solution.cost) {
             self.solution.cost = Some(cost);
@@ -542,13 +494,13 @@ where
         }
 
         let buffer: [u8; 0] = [];
-        source.buffered_send_with_tag(&buffer, Self::TAG_SOLUTION_ACK);
+        source.buffered_send_with_tag(&buffer, TAG_SOLUTION_ACK);
     }
 
     fn receive_solution_ack(&mut self, source_rank: Rank) {
         let source = self.communicator.process_at_rank(source_rank);
         let mut buffer: [u8; 0] = [];
-        source.receive_into_with_tag(&mut buffer, Self::TAG_SOLUTION_ACK);
+        source.receive_into_with_tag(&mut buffer, TAG_SOLUTION_ACK);
         self.n_solution_ack_remaining -= 1;
     }
 
@@ -560,7 +512,7 @@ where
                 for destination_rank in 0..self.communicator.size() {
                     if destination_rank != self.communicator.rank() {
                         let destination = self.communicator.process_at_rank(destination_rank);
-                        destination.buffered_send_with_tag(&primal_bound, Self::TAG_PRIMAL_BOUND);
+                        destination.buffered_send_with_tag(&primal_bound, TAG_PRIMAL_BOUND);
                         self.n_primal_bound_ack_remaining += 1;
                     }
                 }
@@ -570,7 +522,7 @@ where
                 for destination_rank in 0..self.communicator.size() {
                     if destination_rank != self.communicator.rank() {
                         let destination = self.communicator.process_at_rank(destination_rank);
-                        destination.buffered_send_with_tag(&primal_bound, Self::TAG_PRIMAL_BOUND);
+                        destination.buffered_send_with_tag(&primal_bound, TAG_PRIMAL_BOUND);
                         self.n_primal_bound_ack_remaining += 1;
                     }
                 }
@@ -591,10 +543,10 @@ where
         let source = self.communicator.process_at_rank(source_rank);
 
         let primal_bound = if T::is_float() {
-            let (primal_bound, _) = source.receive_with_tag::<Continuous>(Self::TAG_PRIMAL_BOUND);
+            let (primal_bound, _) = source.receive_with_tag::<Continuous>(TAG_PRIMAL_BOUND);
             T::from(primal_bound)
         } else {
-            let (primal_bound, _) = source.receive_with_tag::<Integer>(Self::TAG_PRIMAL_BOUND);
+            let (primal_bound, _) = source.receive_with_tag::<Integer>(TAG_PRIMAL_BOUND);
             T::from(primal_bound)
         };
 
@@ -612,13 +564,13 @@ where
         }
 
         let buffer: [u8; 0] = [];
-        source.buffered_send_with_tag(&buffer, Self::TAG_PRIMAL_BOUND_ACK);
+        source.buffered_send_with_tag(&buffer, TAG_PRIMAL_BOUND_ACK);
     }
 
     fn receive_primal_bound_ack(&mut self, source_rank: Rank) {
         let source = self.communicator.process_at_rank(source_rank);
         let mut buffer: [u8; 0] = [];
-        source.receive_into_with_tag(&mut buffer, Self::TAG_PRIMAL_BOUND_ACK);
+        source.receive_into_with_tag(&mut buffer, TAG_PRIMAL_BOUND_ACK);
         self.n_primal_bound_ack_remaining -= 1;
     }
 
@@ -651,7 +603,7 @@ where
             self.is_retrieving_partial_solution = true;
             let buffer = [parent_id, self.partial_solution_timestamp];
             let destination_process = self.communicator.process_at_rank(parent_rank);
-            destination_process.buffered_send_with_tag(&buffer, Self::TAG_PARTIAL_SOLUTION_REQUEST);
+            destination_process.buffered_send_with_tag(&buffer, TAG_PARTIAL_SOLUTION_REQUEST);
             self.n_partial_solution_remaining += 1;
         } else {
             let reverse_transition_ids = self.reverse_transition_ids.clone();
@@ -704,7 +656,7 @@ where
     ) {
         let mut buffer = [0usize; 2];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, Self::TAG_PARTIAL_SOLUTION_REQUEST);
+        source_process.receive_into_with_tag(&mut buffer, TAG_PARTIAL_SOLUTION_REQUEST);
         let chain_id = buffer[0];
         let timestamp = buffer[1];
 
@@ -717,7 +669,7 @@ where
             &transition_forced,
             parent,
             timestamp,
-            &Self::TAG_PARTIAL_SOLUTION,
+            &TAG_PARTIAL_SOLUTION,
         )
     }
 
@@ -728,7 +680,7 @@ where
             &mut self.reverse_transition_ids,
             &mut self.reverse_transition_forced,
             self.partial_solution_timestamp,
-            &Self::TAG_PARTIAL_SOLUTION,
+            &TAG_PARTIAL_SOLUTION,
         );
         self.n_partial_solution_remaining -= 1;
 
@@ -736,8 +688,7 @@ where
             if let Some((parent_rank, parent_id)) = parent {
                 let buffer = [parent_id, self.partial_solution_timestamp];
                 let destination_process = self.communicator.process_at_rank(parent_rank);
-                destination_process
-                    .buffered_send_with_tag(&buffer, Self::TAG_PARTIAL_SOLUTION_REQUEST);
+                destination_process.buffered_send_with_tag(&buffer, TAG_PARTIAL_SOLUTION_REQUEST);
                 self.n_partial_solution_remaining += 1;
             } else {
                 self.is_retrieving_partial_solution = false;
@@ -771,16 +722,16 @@ where
         id_to_chain_node: &[Rc<DistributedTransitionIdChain>],
     ) {
         match tag {
-            Self::TAG_PRIMAL_BOUND => self.receive_primal_bound(source_rank),
-            Self::TAG_PRIMAL_BOUND_ACK => self.receive_primal_bound_ack(source_rank),
-            Self::TAG_PARTIAL_SOLUTION_REQUEST => {
+            TAG_PRIMAL_BOUND => self.receive_primal_bound(source_rank),
+            TAG_PRIMAL_BOUND_ACK => self.receive_primal_bound_ack(source_rank),
+            TAG_PARTIAL_SOLUTION_REQUEST => {
                 self.receive_partial_solution_request(source_rank, id_to_chain_node)
             }
-            Self::TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA => {
+            TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA => {
                 self.receive_partial_solution_response(source_rank)
             }
-            Self::TAG_N_TRANSITION_IDS_AND_COST => self.receive_solution(source_rank),
-            Self::TAG_SOLUTION_ACK => self.receive_solution_ack(source_rank),
+            TAG_N_TRANSITION_IDS_AND_COST => self.receive_solution(source_rank),
+            TAG_SOLUTION_ACK => self.receive_solution_ack(source_rank),
             _ => {}
         }
     }
@@ -803,10 +754,8 @@ where
                 }
 
                 let source = self.communicator.process_at_rank(source_rank);
-                let information = FinalSolutionInformation::<T>::receive(
-                    &source,
-                    Self::TAG_FINAL_SOLUTION_INFORMATION,
-                );
+                let information =
+                    FinalSolutionInformation::<T>::receive(&source, TAG_FINAL_SOLUTION_INFORMATION);
 
                 if let Some(cost) = information.cost {
                     if !data_structure::exceed_bound(model, cost, self.solution.cost) {
@@ -839,19 +788,16 @@ where
 
                 let request = destination_rank == best_rank;
                 let destination_process = self.communicator.process_at_rank(destination_rank);
-                destination_process.send_with_tag(&request, Self::TAG_FINAL_TRANSITION_IDS_REQUEST);
+                destination_process.send_with_tag(&request, TAG_FINAL_TRANSITION_IDS_REQUEST);
             }
 
             if best_rank != this_rank {
                 let mut transition_ids = vec![0; n_best_transitions];
                 let mut transition_forced = vec![false; n_best_transitions];
                 let source_process = self.communicator.process_at_rank(best_rank);
+                source_process.receive_into_with_tag(&mut transition_ids, TAG_FINAL_TRANSITION_IDS);
                 source_process
-                    .receive_into_with_tag(&mut transition_ids, Self::TAG_FINAL_TRANSITION_IDS);
-                source_process.receive_into_with_tag(
-                    &mut transition_forced,
-                    Self::TAG_FINAL_TRANSITION_FORCED,
-                );
+                    .receive_into_with_tag(&mut transition_forced, TAG_FINAL_TRANSITION_FORCED);
                 self.solution.transitions.clear();
                 self.solution.transitions.extend(
                     transition_ids
@@ -904,10 +850,9 @@ where
                     None
                 },
             };
-            information.send(&root, Self::TAG_FINAL_SOLUTION_INFORMATION);
+            information.send(&root, TAG_FINAL_SOLUTION_INFORMATION);
 
-            let (request, _) =
-                root.receive_with_tag::<bool>(Self::TAG_FINAL_TRANSITION_IDS_REQUEST);
+            let (request, _) = root.receive_with_tag::<bool>(TAG_FINAL_TRANSITION_IDS_REQUEST);
 
             if request {
                 let transition_ids = self
@@ -922,8 +867,8 @@ where
                     .iter()
                     .map(|t| t.forced)
                     .collect::<Vec<_>>();
-                root.send_with_tag(&transition_ids[..], Self::TAG_FINAL_TRANSITION_IDS);
-                root.send_with_tag(&transition_forced[..], Self::TAG_FINAL_TRANSITION_FORCED);
+                root.send_with_tag(&transition_ids[..], TAG_FINAL_TRANSITION_IDS);
+                root.send_with_tag(&transition_forced[..], TAG_FINAL_TRANSITION_FORCED);
             }
 
             let statistics = self
@@ -932,20 +877,6 @@ where
 
             (self.solution.clone(), statistics)
         }
-    }
-
-    pub fn gather_bound_to_expanded(&self) -> Vec<KeyValueStatistics<T, usize>> {
-        if !self.count_bound_to_expanded {
-            return Vec::default();
-        }
-
-        let bound_to_expanded = KeyValueStatistics::from(self.bound_to_expanded.clone());
-
-        bound_to_expanded.gather(
-            self.communicator,
-            self.root_rank,
-            Self::TAG_BOUND_TO_EXPANDED,
-        )
     }
 }
 
@@ -999,8 +930,6 @@ where
     Transition: From<V> + From<TransitionWithId<V>>,
     TransitionWithId<V>: Clone,
 {
-    pub const TAG_OFFSET: Tag = MpiSolutionManager::<'a, T, B, V>::TAG_OFFSET;
-
     pub fn new(
         generator: SuccessorGenerator<TransitionWithId<V>>,
         suffix: &'a [TransitionWithId<V>],
@@ -1027,25 +956,6 @@ where
             solution_manager,
             _phantom: PhantomData,
         }
-    }
-
-    pub fn set_solution(&mut self, solution: Solution<T, TransitionWithId<V>>) {
-        self.solution_manager.set_solution(solution)
-    }
-
-    pub fn set_statistics(&mut self, statistics: Statistics) {
-        self.solution_manager.set_statistics(statistics)
-    }
-
-    pub fn set_id_to_chain_node(
-        &mut self,
-        id_to_chain_node: Vec<Rc<DistributedTransitionIdChain>>,
-    ) {
-        self.id_to_chain_node = id_to_chain_node;
-    }
-
-    pub fn reset_generated(&mut self) {
-        self.solution_manager.reset_generated()
     }
 
     pub fn set_time_offset(&mut self, offset: f64) {
@@ -1196,8 +1106,7 @@ where
         self.id_to_chain_node
             .push(node.get_rc_distributed_transition_id_chain().clone());
 
-        self.solution_manager
-            .increment_expanded(node.bound(&self.generator.model));
+        self.solution_manager.increment_expanded();
         let n_ranks = self.communicator.size() as u64;
         let this_rank = self.communicator.rank();
         let mut better_goal_found = false;
@@ -1293,9 +1202,5 @@ where
         local_dual_bound: Option<T>,
     ) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
         self.solution_manager.finalize(local_dual_bound)
-    }
-
-    pub fn gather_bound_to_expanded(&self) -> Vec<KeyValueStatistics<T, usize>> {
-        self.solution_manager.gather_bound_to_expanded()
     }
 }
