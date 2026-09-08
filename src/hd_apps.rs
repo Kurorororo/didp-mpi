@@ -8,9 +8,11 @@ use dypdl_heuristic_search::{
     ProgressiveSearchParameters,
 };
 use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
+use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::fmt::{Debug, Display};
 use std::hash::Hash;
+use std::ops::Deref;
 use std::rc::Rc;
 use std::str::FromStr;
 
@@ -18,9 +20,10 @@ use crate::is_float::IsFloat;
 use crate::mpi_anytime_search::{
     MpiAnytimeSearch, MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters, TAG_OFFSET,
 };
-use crate::node_communicator::TimeStampedNodeCommunicator;
+use crate::node_communicator::TimeStampedNodeDepthCommunicator;
 use crate::node_message::NodeMessage;
 use crate::statistics::Statistics;
+use crate::ExpansionStatistics;
 use crate::{
     bfs_node_with_distributed_id_chain::{BfsNodeWithDistributedIdChain, NodeGenerationResult},
     distributed_id_chain::DistributedTransitionIdChain,
@@ -32,6 +35,40 @@ const TAG_TIME_OUT_ACK: Tag = TAG_OFFSET + 2;
 const TAG_TERMINATION_DETECTION: Tag = TAG_OFFSET + 3;
 const TAG_TERMINATE: Tag = TAG_OFFSET + 4;
 
+#[derive(Clone, Debug)]
+struct NodeWithDepth<N> {
+    node: Rc<N>,
+    depth: usize,
+}
+
+impl<N> Deref for NodeWithDepth<N> {
+    type Target = N;
+
+    fn deref(&self) -> &Self::Target {
+        &self.node
+    }
+}
+
+impl<N: PartialEq> PartialEq for NodeWithDepth<N> {
+    fn eq(&self, other: &Self) -> bool {
+        self.node.eq(&other.node)
+    }
+}
+
+impl<N: Eq> Eq for NodeWithDepth<N> {}
+
+impl<N: Ord> Ord for NodeWithDepth<N> {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.node.cmp(&other.node)
+    }
+}
+
+impl<N: Ord> PartialOrd for NodeWithDepth<N> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 pub struct HdApps<'a, T, N, M, L, R, B, F, V = Transition>
 where
     T: IsFloat + Ord + Display,
@@ -41,18 +78,19 @@ where
     model: Rc<Model>,
     search: MpiAnytimeSearch<'a, T, N, M, L, R, B, F, V>,
     communicator: &'a SimpleCommunicator,
-    node_communicator: TimeStampedNodeCommunicator<'a, SimpleCommunicator, M, T>,
+    node_communicator: TimeStampedNodeDepthCommunicator<'a, SimpleCommunicator, M, T>,
     progressive_parameters: ProgressiveSearchParameters,
     width: usize,
-    open: BinaryHeap<Rc<N>>,
-    children: BinaryHeap<Rc<N>>,
-    suspend: BinaryHeap<Rc<N>>,
+    open: BinaryHeap<NodeWithDepth<N>>,
+    children: BinaryHeap<NodeWithDepth<N>>,
+    suspend: BinaryHeap<NodeWithDepth<N>>,
     registry: StateRegistry<T, N>,
     local_dual_bound: Option<T>,
     is_time_out: bool,
     n_remaining_time_out_ack: usize,
     is_checking_termination: bool,
     is_terminated: bool,
+    expansion_statistics: Option<ExpansionStatistics<T>>,
 }
 
 impl<'a, T, N, M, L, R, B, F, V> HdApps<'a, T, N, M, L, R, B, F, V>
@@ -103,7 +141,7 @@ where
             communicator,
         );
 
-        let node_communicator = TimeStampedNodeCommunicator::new(
+        let node_communicator = TimeStampedNodeDepthCommunicator::new(
             communicator,
             TAG_NODE,
             TAG_TERMINATION_DETECTION,
@@ -120,7 +158,7 @@ where
         }
 
         if let Some(node) = search.generate_root_node(input.node, &mut registry) {
-            children.push(node);
+            children.push(NodeWithDepth { node, depth: 0 });
         }
 
         Self {
@@ -139,7 +177,20 @@ where
             n_remaining_time_out_ack: 0,
             is_checking_termination: false,
             is_terminated: false,
+            expansion_statistics: None,
         }
+    }
+
+    pub fn enable_expansion_statistics(&mut self) {
+        assert!(
+            self.search.local_statistics().expanded == 0,
+            "expansion statistics must be enabled before search"
+        );
+        self.expansion_statistics = Some(ExpansionStatistics::default());
+    }
+
+    pub fn expansion_statistics(&self) -> Option<&ExpansionStatistics<T>> {
+        self.expansion_statistics.as_ref()
     }
 
     fn receive_node(&mut self, source_rank: Rank) {
@@ -154,14 +205,14 @@ where
                     self.local_dual_bound = Some(bound);
                 }
             }
-        } else if let Some(node) = self
+        } else if let Some((node, depth)) = self
             .node_communicator
             .receive(source_rank, self.search.get_primal_bound())
         {
             let node = N::from(node);
 
             if let Some(node) = self.search.open_node(node, &mut self.registry) {
-                self.children.push(node);
+                self.children.push(NodeWithDepth { node, depth });
             }
         }
     }
@@ -399,19 +450,27 @@ where
                     }
                 }
 
+                if let Some(statistics) = self.expansion_statistics.as_mut() {
+                    statistics.record(node.depth, node.bound(&self.model));
+                }
+                let depth = node.depth;
                 goal_found |= self.search.expand(
-                    node,
+                    node.node,
                     &mut self.registry,
                     &mut keep_buffer,
                     &mut send_buffer,
                 );
 
                 for (destination_rank, successor) in send_buffer.drain(..) {
-                    self.node_communicator.send(destination_rank, &successor);
+                    self.node_communicator
+                        .send(destination_rank, &successor, depth + 1);
                 }
 
                 for successor in keep_buffer.drain(..) {
-                    self.children.push(successor);
+                    self.children.push(NodeWithDepth {
+                        node: successor,
+                        depth: depth + 1,
+                    });
                 }
             }
         }

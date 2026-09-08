@@ -49,7 +49,8 @@ const TAG_FINAL_SOLUTION_INFORMATION: Tag = 10;
 const TAG_FINAL_TRANSITION_IDS_REQUEST: Tag = 11;
 const TAG_FINAL_TRANSITION_IDS: Tag = 12;
 const TAG_FINAL_TRANSITION_FORCED: Tag = 13;
-pub const TAG_OFFSET: Tag = 14;
+pub const TAG_EXPANSION_STATISTICS: Tag = TAG_FINAL_TRANSITION_FORCED + 1;
+pub const TAG_OFFSET: Tag = TAG_EXPANSION_STATISTICS + 1;
 
 #[derive(Copy, Clone, Debug, Default)]
 struct NTransitionIdsAndCostForSend<T>(usize, T);
@@ -893,7 +894,33 @@ where
     remote_successor_evaluator: R,
     id_to_chain_node: Vec<Rc<DistributedTransitionIdChain>>,
     solution_manager: MpiSolutionManager<'a, T, B, V>,
+    state_registry_statistics: Option<StateRegistryStatistics>,
     _phantom: PhantomData<(N, M)>,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct StateRegistryStatistics {
+    pub entries: usize,
+    pub closed_entries: usize,
+    pub inserted: usize,
+    pub removed: usize,
+}
+
+impl StateRegistryStatistics {
+    fn update_after_insertion(&mut self, inserted: bool, removed: usize, closed_removed: usize) {
+        let inserted = usize::from(inserted);
+        self.entries = self
+            .entries
+            .checked_add(inserted)
+            .and_then(|entries| entries.checked_sub(removed))
+            .expect("state registry entry count became inconsistent");
+        self.closed_entries = self
+            .closed_entries
+            .checked_sub(closed_removed)
+            .expect("closed state registry entry count became inconsistent");
+        self.inserted += inserted;
+        self.removed += removed;
+    }
 }
 
 pub struct MpiAnytimeSearchEvaluators<L, R, B> {
@@ -954,6 +981,7 @@ where
             remote_successor_evaluator: evaluators.remote_successor_evaluator,
             id_to_chain_node: Vec::default(),
             solution_manager,
+            state_registry_statistics: None,
             _phantom: PhantomData,
         }
     }
@@ -982,41 +1010,93 @@ where
         self.solution_manager.cannot_terminate()
     }
 
-    fn open_node_inner(
-        node: N,
-        registry: &mut StateRegistry<T, N>,
-        solution_manager: &mut MpiSolutionManager<'a, T, B, V>,
-    ) -> Option<Rc<N>> {
+    pub(crate) fn local_statistics(&self) -> &Statistics {
+        &self.solution_manager.statistics
+    }
+
+    pub(crate) fn state_registry_statistics(&self) -> StateRegistryStatistics {
+        self.state_registry_statistics
+            .expect("state registry statistics are not enabled")
+    }
+
+    pub(crate) fn transition_chain_nodes(&self) -> usize {
+        self.id_to_chain_node.len()
+    }
+
+    pub(crate) fn transition_chain_capacity(&self) -> usize {
+        self.id_to_chain_node.capacity()
+    }
+
+    pub(crate) fn enable_state_registry_statistics(&mut self, initial_entries: usize) {
+        self.state_registry_statistics = Some(StateRegistryStatistics {
+            entries: initial_entries,
+            inserted: initial_entries,
+            ..Default::default()
+        });
+    }
+
+    pub(crate) fn close_registry_entries(&mut self, n: usize) {
+        if let Some(statistics) = self.state_registry_statistics.as_mut() {
+            statistics.closed_entries += n;
+            assert!(
+                statistics.closed_entries <= statistics.entries,
+                "closed state registry entries exceeded total entries"
+            );
+        }
+    }
+
+    pub fn open_node(&mut self, node: N, registry: &mut StateRegistry<T, N>) -> Option<Rc<N>> {
         let result = registry.insert(node);
+        if let Some(statistics) = self.state_registry_statistics.as_mut() {
+            let closed_removed = result
+                .dominated
+                .iter()
+                .filter(|node| node.is_closed())
+                .count();
+            statistics.update_after_insertion(
+                result.information.is_some(),
+                result.dominated.len(),
+                closed_removed,
+            );
+        }
 
         for d in result.dominated.iter() {
             if !d.is_closed() {
                 d.close();
-                solution_manager.increase_dominated_before_closed(1);
+                self.solution_manager.increase_dominated_before_closed(1);
             } else {
-                solution_manager.increase_dominated_after_closed(1);
+                self.solution_manager.increase_dominated_after_closed(1);
             }
         }
 
         let node = result.information?;
 
         if result.dominated.is_empty() {
-            solution_manager.increment_generated();
+            self.solution_manager.increment_generated();
         }
 
         Some(node)
     }
 
-    pub fn open_node(&mut self, node: N, registry: &mut StateRegistry<T, N>) -> Option<Rc<N>> {
-        Self::open_node_inner(node, registry, &mut self.solution_manager)
-    }
-
     pub fn close_node(&mut self, node: N, registry: &mut StateRegistry<T, N>) {
         let result = registry.insert(node);
+        if let Some(statistics) = self.state_registry_statistics.as_mut() {
+            let closed_removed = result
+                .dominated
+                .iter()
+                .filter(|node| node.is_closed())
+                .count();
+            statistics.update_after_insertion(
+                result.information.is_some(),
+                result.dominated.len(),
+                closed_removed,
+            );
+        }
 
         if let Some(node) = result.information {
             self.solution_manager.increment_generated();
             node.close();
+            self.close_registry_entries(1);
         }
     }
 
@@ -1149,6 +1229,13 @@ where
                         registry,
                         self.solution_manager.get_primal_bound(),
                     );
+                    if let Some(statistics) = self.state_registry_statistics.as_mut() {
+                        statistics.update_after_insertion(
+                            result.node.is_some(),
+                            result.dominated_before_closed + result.dominated_after_closed,
+                            result.dominated_after_closed,
+                        );
+                    }
 
                     if !result.is_pruned_by_bound {
                         self.solution_manager.increment_kept();
@@ -1202,5 +1289,25 @@ where
         local_dual_bound: Option<T>,
     ) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
         self.solution_manager.finalize(local_dual_bound)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn update_state_registry_statistics() {
+        let mut statistics = StateRegistryStatistics::default();
+
+        statistics.update_after_insertion(true, 0, 0);
+        statistics.update_after_insertion(true, 0, 0);
+        statistics.closed_entries = 1;
+        statistics.update_after_insertion(true, 1, 1);
+
+        assert_eq!(statistics.entries, 2);
+        assert_eq!(statistics.closed_entries, 0);
+        assert_eq!(statistics.inserted, 3);
+        assert_eq!(statistics.removed, 1);
     }
 }

@@ -45,12 +45,27 @@ where
     T: Numeric + Display,
     N: BfsNodeWithDistributedIdChain<T>,
 {
+    pop_from_open_and_count_closed(open, model, primal_bound).0
+}
+
+pub fn pop_from_open_and_count_closed<T, N>(
+    open: &mut BinaryHeap<Rc<N>>,
+    model: &Model,
+    primal_bound: Option<T>,
+) -> (Option<Rc<N>>, usize)
+where
+    T: Numeric + Display,
+    N: BfsNodeWithDistributedIdChain<T>,
+{
+    let mut closed = 0;
+
     while let Some(node) = open.pop() {
         if node.is_closed() {
             continue;
         }
 
         node.close();
+        closed += 1;
 
         if node.bound(model).map_or(false, |bound| {
             data_structure::exceed_bound(model, bound, primal_bound)
@@ -58,16 +73,16 @@ where
             if N::ordered_by_bound() {
                 open.clear();
 
-                return None;
+                return (None, closed);
             }
 
             continue;
         }
 
-        return Some(node);
+        return (Some(node), closed);
     }
 
-    None
+    (None, closed)
 }
 
 pub fn pop_from_open_with_depth<T, N>(
@@ -79,12 +94,27 @@ where
     T: Numeric + Display,
     N: BfsNodeWithDistributedIdChain<T>,
 {
+    pop_from_open_with_depth_and_count_closed(open, model, primal_bound).0
+}
+
+pub fn pop_from_open_with_depth_and_count_closed<T, N>(
+    open: &mut BinaryHeap<(Rc<N>, usize)>,
+    model: &Model,
+    primal_bound: Option<T>,
+) -> (Option<(Rc<N>, usize)>, usize)
+where
+    T: Numeric + Display,
+    N: BfsNodeWithDistributedIdChain<T>,
+{
+    let mut closed = 0;
+
     while let Some((node, depth)) = open.pop() {
         if node.is_closed() {
             continue;
         }
 
         node.close();
+        closed += 1;
 
         if node.bound(model).map_or(false, |bound| {
             data_structure::exceed_bound(model, bound, primal_bound)
@@ -92,16 +122,16 @@ where
             if N::ordered_by_bound() {
                 open.clear();
 
-                return None;
+                return (None, closed);
             }
 
             continue;
         }
 
-        return Some((node, depth));
+        return (Some((node, depth)), closed);
     }
 
-    None
+    (None, closed)
 }
 
 #[cfg(test)]

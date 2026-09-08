@@ -28,6 +28,35 @@ where
     N: GeRcDistributedTransitionIdChain,
     V: TransitionInterface + Clone,
 {
+    retrieve_solution_and_count_control_messages(
+        communicator,
+        id_to_chain_node,
+        node,
+        suffix,
+        forced_transitions,
+        transitions,
+        tags,
+        |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn retrieve_solution_and_count_control_messages<C, N, V, F>(
+    communicator: &C,
+    id_to_chain_node: &[Rc<DistributedTransitionIdChain>],
+    node: &N,
+    suffix: &[TransitionWithId<V>],
+    forced_transitions: &[Rc<TransitionWithId<V>>],
+    transitions: &[Rc<TransitionWithId<V>>],
+    tags: &RetrieveSolutionTags,
+    mut count_control_message: F,
+) -> Vec<TransitionWithId<V>>
+where
+    C: Communicator,
+    N: GeRcDistributedTransitionIdChain,
+    V: TransitionInterface + Clone,
+    F: FnMut(Tag),
+{
     let chain = node.get_rc_distributed_transition_id_chain();
     let (mut transition_ids, mut transition_forced, mut parent) =
         chain.get_transition_ids_in_this_rank(id_to_chain_node);
@@ -44,6 +73,7 @@ where
             let destination_process = communicator.process_at_rank(parent_rank);
             destination_process
                 .buffered_send_with_tag(&parent_id, tags.tag_partial_solution_request);
+            count_control_message(tags.tag_partial_solution_request);
 
             parent = receive_partial_solution(
                 &destination_process,
@@ -59,6 +89,7 @@ where
             let buf: [u8; 0] = [];
             let destination_process = communicator.process_at_rank(destination_rank);
             destination_process.buffered_send_with_tag(&buf, tags.tag_partial_solution_finished);
+            count_control_message(tags.tag_partial_solution_finished);
         }
     }
 
@@ -87,6 +118,18 @@ pub fn wait_retrieve_solution<C>(
 ) where
     C: Communicator,
 {
+    wait_retrieve_solution_and_count_control_messages(communicator, id_to_chain_node, tags, |_| {})
+}
+
+pub fn wait_retrieve_solution_and_count_control_messages<C, F>(
+    communicator: &C,
+    id_to_chain_node: &[Rc<DistributedTransitionIdChain>],
+    tags: &RetrieveSolutionTags,
+    mut count_control_message: F,
+) where
+    C: Communicator,
+    F: FnMut(Tag),
+{
     loop {
         let any_process = communicator.any_process();
 
@@ -107,7 +150,10 @@ pub fn wait_retrieve_solution<C>(
                 &transition_forced,
                 parent,
                 &tags.tag_partial_solution,
-            )
+            );
+            count_control_message(tags.tag_partial_solution.fixed_length_data);
+            count_control_message(tags.tag_partial_solution.transition_ids);
+            count_control_message(tags.tag_partial_solution.transition_forced);
         }
 
         if let Some(status) = communicator

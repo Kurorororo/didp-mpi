@@ -1,6 +1,6 @@
 use didp_mpi::{
     AdditionalCommonParameters, HashType, HdAcps, IsFloat, MpiAnytimeSearchParameters, NodeMessage,
-    Statistics,
+    Statistics, TAG_EXPANSION_STATISTICS,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -27,6 +27,7 @@ struct AcpsParameters<T> {
     parameters: Parameters<T>,
     progressive_parameters: ProgressiveSearchParameters,
     f_evaluator_type: FEvaluatorType,
+    record_expansion_statistics: bool,
 }
 
 fn main_with_cost_type_and_hash_function<T, H>(
@@ -44,6 +45,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     let mut parameters = apps_parameters.parameters;
     let progressive_parameters = apps_parameters.progressive_parameters;
     let f_evaluator_type = apps_parameters.f_evaluator_type;
+    let record_expansion_statistics = apps_parameters.record_expansion_statistics;
 
     let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evaluators(
         model,
@@ -94,7 +96,24 @@ fn main_with_cost_type_and_hash_function<T, H>(
         hash_function,
         &communicator,
     );
+    if record_expansion_statistics {
+        solver.enable_expansion_statistics();
+    }
     let (solution, statistics_list) = solver.search();
+
+    if let Some(statistics) = solver.expansion_statistics() {
+        let filename = format!("expansion_statistics_rank_{}.csv", communicator.rank());
+        statistics.dump_to_csv(&filename).unwrap();
+        if let Some(statistics) = statistics
+            .gather(&communicator, 0, TAG_EXPANSION_STATISTICS)
+            .unwrap()
+        {
+            statistics.dump_to_csv("expansion_statistics.csv").unwrap();
+            println!(
+                "Expansion statistics: expansion_statistics.csv and expansion_statistics_rank_<rank>.csv"
+            );
+        }
+    }
 
     if communicator.rank() == 0 {
         didp_mpi::dump_solution(&solution);
@@ -124,6 +143,8 @@ fn main_with_cost_type<T>(
     let parameters = didp_mpi::load_parameters_from_map::<T>(map);
     let additional_parameters = AdditionalCommonParameters::load_from_map(map);
     let progressive_parameters = didp_mpi::load_progressive_parameters_from_map(map);
+    let record_expansion_statistics =
+        didp_mpi::load_bool_from_map(map, "record_expansion_statistics").unwrap_or(false);
 
     if let Some(buffer_size) = additional_parameters.buffer_size {
         universe.set_buffer_size(buffer_size);
@@ -135,6 +156,7 @@ fn main_with_cost_type<T>(
         parameters,
         progressive_parameters,
         f_evaluator_type,
+        record_expansion_statistics,
     };
 
     match additional_parameters.hash_type {

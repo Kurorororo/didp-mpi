@@ -21,6 +21,7 @@ use crate::mpi_anytime_search::{
 use crate::node_communicator::TimeStampedNodeDepthCommunicator;
 use crate::node_message::NodeMessage;
 use crate::statistics::Statistics;
+use crate::ExpansionStatistics;
 use crate::{
     bfs_node_with_distributed_id_chain::{BfsNodeWithDistributedIdChain, NodeGenerationResult},
     distributed_id_chain::DistributedTransitionIdChain,
@@ -51,6 +52,7 @@ where
     n_remaining_time_out_ack: usize,
     is_checking_termination: bool,
     is_terminated: bool,
+    expansion_statistics: Option<ExpansionStatistics<T>>,
 }
 
 impl<'a, T, N, M, L, R, B, F, V> HdAcps<'a, T, N, M, L, R, B, F, V>
@@ -133,7 +135,20 @@ where
             n_remaining_time_out_ack: 0,
             is_checking_termination: false,
             is_terminated: false,
+            expansion_statistics: None,
         }
+    }
+
+    pub fn enable_expansion_statistics(&mut self) {
+        assert!(
+            self.search.local_statistics().expanded == 0,
+            "expansion statistics must be enabled before search"
+        );
+        self.expansion_statistics = Some(ExpansionStatistics::default());
+    }
+
+    pub fn expansion_statistics(&self) -> Option<&ExpansionStatistics<T>> {
+        self.expansion_statistics.as_ref()
     }
 
     fn receive_node(&mut self, source_rank: Rank) {
@@ -322,6 +337,9 @@ where
                 }
 
                 popped += 1;
+                if let Some(statistics) = self.expansion_statistics.as_mut() {
+                    statistics.record(current_depth, node.bound(&self.model));
+                }
                 goal_found |= self.search.expand(
                     node,
                     &mut self.registry,

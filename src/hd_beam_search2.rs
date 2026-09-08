@@ -11,8 +11,12 @@ use mpi::{
     traits::*,
     Address, Rank, Tag,
 };
-use std::fmt::Display;
+use std::error::Error;
+use std::fmt::{Display, Write as FmtWrite};
+use std::fs::OpenOptions;
+use std::io::Write as IoWrite;
 use std::mem;
+use std::ops::AddAssign;
 use std::rc::Rc;
 
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
@@ -31,6 +35,15 @@ const TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA: Tag = 4;
 const TAG_PARTIAL_SOLUTION_TRANSITION_IDS: Tag = 5;
 const TAG_PARTIAL_SOLUTION_TRANSITION_FORCED: Tag = 6;
 const TAG_PARTIAL_SOLUTION_FINISHED: Tag = 7;
+const CAHDBS2_CONTROL_TAGS: [Tag; 7] = [
+    TAG_ALL_NODES_SENT,
+    TAG_LOCAL_LAYER_MESSAGE,
+    TAG_PARTIAL_SOLUTION_REQUEST,
+    TAG_PARTIAL_SOLUTION_FIXED_LENGTH_DATA,
+    TAG_PARTIAL_SOLUTION_TRANSITION_IDS,
+    TAG_PARTIAL_SOLUTION_TRANSITION_FORCED,
+    TAG_PARTIAL_SOLUTION_FINISHED,
+];
 const TAG_RETRIEVE_SOLUTION: RetrieveSolutionTags = RetrieveSolutionTags {
     tag_partial_solution_request: TAG_PARTIAL_SOLUTION_REQUEST,
     tag_partial_solution: PartialSolutionTags {
@@ -40,6 +53,134 @@ const TAG_RETRIEVE_SOLUTION: RetrieveSolutionTags = RetrieveSolutionTags {
     },
     tag_partial_solution_finished: TAG_PARTIAL_SOLUTION_FINISHED,
 };
+
+/// Control-message counts for one CAHDBS2 process.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Cahdbs2ControlStatistics {
+    messages_by_tag: [usize; CAHDBS2_CONTROL_TAGS.len()],
+}
+
+impl AddAssign for Cahdbs2ControlStatistics {
+    fn add_assign(&mut self, rhs: Self) {
+        for (count, rhs_count) in self.messages_by_tag.iter_mut().zip(rhs.messages_by_tag) {
+            *count += rhs_count;
+        }
+    }
+}
+
+impl Cahdbs2ControlStatistics {
+    fn count_control_message(&mut self, tag: Tag) {
+        let index = CAHDBS2_CONTROL_TAGS
+            .iter()
+            .position(|other| *other == tag)
+            .unwrap_or_else(|| panic!("unregistered CAHDBS2 control-message tag: {tag}"));
+        self.messages_by_tag[index] += 1;
+    }
+
+    pub fn total_control_messages(&self) -> usize {
+        self.messages_by_tag.iter().sum()
+    }
+
+    pub fn total_control_messages_by_tag(statistics_list: &[Self]) -> Vec<(Tag, usize)> {
+        CAHDBS2_CONTROL_TAGS
+            .iter()
+            .enumerate()
+            .map(|(index, tag)| {
+                let total = statistics_list
+                    .iter()
+                    .map(|statistics| statistics.messages_by_tag[index])
+                    .sum();
+                (*tag, total)
+            })
+            .collect()
+    }
+
+    pub fn gather<C: Communicator>(
+        &self,
+        communicator: &C,
+        root_rank: Rank,
+        is_root: bool,
+    ) -> Vec<Self> {
+        let root_process = communicator.process_at_rank(root_rank);
+
+        if is_root {
+            let n_ranks = communicator.size() as usize;
+            let mut receive_buffer = vec![0; CAHDBS2_CONTROL_TAGS.len() * n_ranks];
+            root_process.gather_into_root(&self.messages_by_tag, &mut receive_buffer[..]);
+
+            receive_buffer
+                .chunks_exact(CAHDBS2_CONTROL_TAGS.len())
+                .map(|counts| {
+                    let mut messages_by_tag = [0; CAHDBS2_CONTROL_TAGS.len()];
+                    messages_by_tag.copy_from_slice(counts);
+                    Self { messages_by_tag }
+                })
+                .collect()
+        } else {
+            root_process.gather_into(&self.messages_by_tag);
+            vec![]
+        }
+    }
+
+    pub fn dump_to_csv(
+        statistics_list: &[Statistics],
+        control_statistics_list: &[Self],
+        filename: &str,
+    ) -> Result<(), Box<dyn Error>> {
+        if statistics_list.len() != control_statistics_list.len() {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "statistics lists must have the same length",
+            )
+            .into());
+        }
+
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(filename)?;
+        let mut line = String::from(
+            "rank,expanded,generated,sent,kept,received,dominated_before_closed,dominated_after_closed,first_expanded_timestamp,last_expanded_timestamp,first_received_timestamp,last_received_timestamp",
+        );
+
+        for tag in CAHDBS2_CONTROL_TAGS {
+            write!(line, ",control_messages_tag_{tag}")?;
+        }
+        line.push_str(",total_control_messages\n");
+        file.write_all(line.as_bytes())?;
+
+        for (rank, (statistics, control_statistics)) in statistics_list
+            .iter()
+            .zip(control_statistics_list)
+            .enumerate()
+        {
+            let mut line = format!(
+                "{},{},{},{},{},{},{},{},{},{},{},{}",
+                rank,
+                statistics.expanded,
+                statistics.generated,
+                statistics.sent,
+                statistics.kept,
+                statistics.received,
+                statistics.dominated_before_closed,
+                statistics.dominated_after_closed,
+                statistics.first_expanded_timestamp,
+                statistics.last_expanded_timestamp,
+                statistics.first_received_timestamp,
+                statistics.last_received_timestamp
+            );
+
+            for count in control_statistics.messages_by_tag {
+                write!(line, ",{count}")?;
+            }
+            writeln!(line, ",{}", control_statistics.total_control_messages())?;
+            file.write_all(line.as_bytes())?;
+        }
+
+        Ok(())
+    }
+}
 
 pub struct BufferedNodeCommunicator<'a, C, M, T> {
     communicator: NodeCommunicator<'a, C, M, T>,
@@ -241,6 +382,41 @@ where
     F: Fn(&HashableSignatureVariables) -> u64,
     V: TransitionInterface + Clone + Default,
 {
+    let (solution, goal_rank, statistics, _) = hd_beam_search2_with_control_statistics(
+        input,
+        transition_evaluator,
+        base_cost_evaluator,
+        parameters,
+        hash_function,
+        communicator,
+        controller_rank,
+    );
+    (solution, goal_rank, statistics)
+}
+
+pub fn hd_beam_search2_with_control_statistics<'a, T, N, M, E, B, F, V>(
+    input: &'a SearchInput<'a, M, TransitionWithId<V>>,
+    transition_evaluator: E,
+    base_cost_evaluator: B,
+    parameters: Hdbs2Parameters<T>,
+    hash_function: F,
+    communicator: &'a SimpleCommunicator,
+    controller_rank: Rank,
+) -> (
+    Solution<T, TransitionWithId<V>>,
+    Option<Rank>,
+    Statistics,
+    Cahdbs2ControlStatistics,
+)
+where
+    T: Numeric + IsFloat + Ord + Display,
+    N: BfsNodeWithDistributedIdChain<T> + From<M>,
+    M: Clone + NodeMessage<T>,
+    E: Fn(&N, &TransitionWithId<V>, Option<T>) -> Option<M>,
+    B: Fn(T, T) -> T,
+    F: Fn(&HashableSignatureVariables) -> u64,
+    V: TransitionInterface + Clone + Default,
+{
     let this_rank = communicator.rank();
     let time_keeper = parameters
         .parameters
@@ -269,6 +445,7 @@ where
     let mut kept = 0;
     let mut received = 0;
     let mut generated = 0;
+    let mut control_statistics = Cahdbs2ControlStatistics::default();
 
     if let Some(node) = input.node.clone() {
         let hash_value = hash_function(node.signature());
@@ -310,6 +487,7 @@ where
                 cost: None,
             };
             message.send(communicator, destination_rank, TAG_LOCAL_LAYER_MESSAGE);
+            control_statistics.count_control_message(TAG_LOCAL_LAYER_MESSAGE);
         }
     }
 
@@ -550,6 +728,7 @@ where
                                 &destination_to_n_sent[destination_rank as usize],
                                 TAG_ALL_NODES_SENT,
                             );
+                            control_statistics.count_control_message(TAG_ALL_NODES_SENT);
                         }
                     }
                 }
@@ -686,21 +865,24 @@ where
 
                 if goal_rank == this_rank {
                     let (node, cost, suffix) = incumbent.unwrap();
-                    solution.transitions = retrieve_solution::retrieve_solution(
-                        communicator,
-                        &id_to_chain_node,
-                        node.as_ref(),
-                        suffix,
-                        &generator.forced_transitions,
-                        &generator.transitions,
-                        &TAG_RETRIEVE_SOLUTION,
-                    );
+                    solution.transitions =
+                        retrieve_solution::retrieve_solution_and_count_control_messages(
+                            communicator,
+                            &id_to_chain_node,
+                            node.as_ref(),
+                            suffix,
+                            &generator.forced_transitions,
+                            &generator.transitions,
+                            &TAG_RETRIEVE_SOLUTION,
+                            |tag| control_statistics.count_control_message(tag),
+                        );
                     solution.cost = Some(cost);
                 } else {
-                    retrieve_solution::wait_retrieve_solution(
+                    retrieve_solution::wait_retrieve_solution_and_count_control_messages(
                         communicator,
                         &id_to_chain_node,
                         &TAG_RETRIEVE_SOLUTION,
+                        |tag| control_statistics.count_control_message(tag),
                     );
                 }
             }
@@ -708,7 +890,7 @@ where
             // Wait for the other ranks to finish.
             communicator.barrier();
 
-            return (solution, goal_rank, statistics);
+            return (solution, goal_rank, statistics, control_statistics);
         }
 
         node_communicator.close_channels();
@@ -726,6 +908,7 @@ where
         for destination_rank in 0..n_ranks as Rank {
             if destination_rank != this_rank {
                 local_layer_message.send(communicator, destination_rank, TAG_LOCAL_LAYER_MESSAGE);
+                control_statistics.count_control_message(TAG_LOCAL_LAYER_MESSAGE);
             }
         }
 
@@ -736,5 +919,43 @@ where
         }
 
         layer_index += 1;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn count_and_accumulate_control_messages() {
+        let mut statistics = Cahdbs2ControlStatistics::default();
+        statistics.count_control_message(TAG_ALL_NODES_SENT);
+        statistics.count_control_message(TAG_ALL_NODES_SENT);
+        statistics.count_control_message(TAG_PARTIAL_SOLUTION_FINISHED);
+
+        let other = Cahdbs2ControlStatistics {
+            messages_by_tag: [1; CAHDBS2_CONTROL_TAGS.len()],
+        };
+        statistics += other;
+
+        assert_eq!(statistics.messages_by_tag, [3, 1, 1, 1, 1, 1, 2]);
+        assert_eq!(statistics.total_control_messages(), 10);
+    }
+
+    #[test]
+    fn total_control_messages_by_tag() {
+        let statistics_list = [
+            Cahdbs2ControlStatistics {
+                messages_by_tag: [1, 2, 3, 4, 5, 6, 7],
+            },
+            Cahdbs2ControlStatistics {
+                messages_by_tag: [7, 6, 5, 4, 3, 2, 1],
+            },
+        ];
+
+        assert_eq!(
+            Cahdbs2ControlStatistics::total_control_messages_by_tag(&statistics_list),
+            vec![(1, 8), (2, 8), (3, 8), (4, 8), (5, 8), (6, 8), (7, 8)]
+        );
     }
 }

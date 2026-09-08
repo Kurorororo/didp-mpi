@@ -2,6 +2,7 @@ mod bfs_node_with_distributed_id_chain;
 mod distributed_f_node;
 mod distributed_f_node_message;
 mod distributed_id_chain;
+mod expansion_statistics;
 mod hac;
 mod hash_functions;
 mod hd_acps;
@@ -32,18 +33,22 @@ pub use bfs_node_with_distributed_id_chain::NodeGenerationResult;
 pub use distributed_f_node::{DistributedFNode, FNodeEvaluators};
 pub use distributed_f_node_message::DistributedFNodeMessage;
 pub use distributed_id_chain::DistributedTransitionIdChain;
+pub use expansion_statistics::ExpansionStatistics;
 pub use hac::Hac;
 pub use hash_functions::{
     create_abstract_bytewise_random_table, create_bytewise_zobrist_hash, create_fx_hash,
 };
 pub use hd_acps::HdAcps;
 pub use hd_apps::HdApps;
-pub use hd_beam_search2::{hd_beam_search2, Hdbs2Parameters};
+pub use hd_beam_search2::{
+    hd_beam_search2, hd_beam_search2_with_control_statistics, Cahdbs2ControlStatistics,
+    Hdbs2Parameters,
+};
 pub use hd_beam_search3::Hdbs3;
 pub use hd_best_first_search::HdBestFirstSearch;
 pub use hd_breadth_first_search2::{hd_breadth_first_search2, Hdbrfs2Parameters};
 pub use hd_breadth_first_search3::Hdbrfs3;
-pub use hd_hac::HdHac;
+pub use hd_hac::{HdHac, HdHacMemoryStatistics, HdHacSearchNodeMemoryLayout};
 pub use io::{
     dump_solution, dump_statistics, load_bool_from_map, load_brfs_parameters_from_map,
     load_cabs_parameters_from_map, load_f64_from_map, load_f_evaluator_type_from_map,
@@ -52,7 +57,9 @@ pub use io::{
     AdditionalCommonParameters, HashType,
 };
 pub use is_float::IsFloat;
-pub use mpi_anytime_search::{MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters};
+pub use mpi_anytime_search::{
+    MpiAnytimeSearchEvaluators, MpiAnytimeSearchParameters, TAG_EXPANSION_STATISTICS,
+};
 pub use node_message::NodeMessage;
 pub use statistics::Statistics;
 pub use util::{

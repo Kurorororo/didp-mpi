@@ -1,6 +1,6 @@
 use didp_mpi::{
-    AdditionalCommonParameters, DistributedFNode, DistributedFNodeMessage, HashType,
-    Hdbs2Parameters, IsFloat, NodeMessage, Statistics,
+    AdditionalCommonParameters, Cahdbs2ControlStatistics, DistributedFNode,
+    DistributedFNodeMessage, HashType, Hdbs2Parameters, IsFloat, NodeMessage, Statistics,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -99,6 +99,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     }
 
     let mut statistics = Statistics::default();
+    let mut control_statistics = Cahdbs2ControlStatistics::default();
     let mut root_rank = None;
     let mut dual_bound = None;
 
@@ -107,17 +108,19 @@ fn main_with_cost_type_and_hash_function<T, H>(
             parameters,
             dual_bound,
         };
-        let (solution, goal_rank, tmp_statistics) = didp_mpi::hd_beam_search2(
-            input,
-            &transition_evaluator,
-            base_cost_evaluator,
-            parameters,
-            &hash_function,
-            &communicator,
-            0,
-        );
+        let (solution, goal_rank, tmp_statistics, tmp_control_statistics) =
+            didp_mpi::hd_beam_search2_with_control_statistics(
+                input,
+                &transition_evaluator,
+                base_cost_evaluator,
+                parameters,
+                &hash_function,
+                &communicator,
+                0,
+            );
         dual_bound = solution.best_bound;
         statistics += tmp_statistics;
+        control_statistics += tmp_control_statistics;
 
         if goal_rank == Some(communicator.rank()) && solution.cost.is_some() {
             didp_mpi::write_solution(&solution, "solution.yaml");
@@ -152,6 +155,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     let root_rank = root_rank.unwrap_or(0);
     let is_root = communicator.rank() == root_rank;
     let statistics_list = statistics.gather(&communicator, root_rank, is_root);
+    let control_statistics_list = control_statistics.gather(&communicator, root_rank, is_root);
 
     if is_root {
         solution.expanded = statistics_list.iter().map(|s| s.expanded).sum();
@@ -164,7 +168,22 @@ fn main_with_cost_type_and_hash_function<T, H>(
         );
 
         didp_mpi::dump_statistics(&statistics_list);
-        Statistics::dump_to_csv(&statistics_list, "statistics.csv").unwrap();
+        let total_control_messages_by_tag =
+            Cahdbs2ControlStatistics::total_control_messages_by_tag(&control_statistics_list);
+        for (tag, total) in &total_control_messages_by_tag {
+            println!("Total control messages for tag {}: {}", tag, total);
+        }
+        let total_control_messages: usize = total_control_messages_by_tag
+            .iter()
+            .map(|(_, total)| total)
+            .sum();
+        println!("Total control messages: {}", total_control_messages);
+        Cahdbs2ControlStatistics::dump_to_csv(
+            &statistics_list,
+            &control_statistics_list,
+            "statistics.csv",
+        )
+        .unwrap();
     }
 }
 
