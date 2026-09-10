@@ -8,7 +8,7 @@ use std::str::FromStr;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ExpansionStatistics<T> {
-    counts: BTreeMap<(usize, Option<T>), usize>,
+    counts: BTreeMap<(usize, Option<T>, T), usize>,
 }
 
 impl<T> Default for ExpansionStatistics<T> {
@@ -20,14 +20,14 @@ impl<T> Default for ExpansionStatistics<T> {
 }
 
 impl<T: Ord> ExpansionStatistics<T> {
-    pub fn record(&mut self, depth: usize, f_value: Option<T>) {
-        *self.counts.entry((depth, f_value)).or_default() += 1;
+    pub fn record(&mut self, depth: usize, f_value: Option<T>, g_value: T) {
+        *self.counts.entry((depth, f_value, g_value)).or_default() += 1;
     }
 
-    pub fn iter(&self) -> impl Iterator<Item = (usize, Option<&T>, usize)> {
+    pub fn iter(&self) -> impl Iterator<Item = (usize, Option<&T>, &T, usize)> {
         self.counts
             .iter()
-            .map(|((depth, f_value), count)| (*depth, f_value.as_ref(), *count))
+            .map(|((depth, f_value, g_value), count)| (*depth, f_value.as_ref(), g_value, *count))
     }
 
     pub fn total(&self) -> usize {
@@ -42,11 +42,11 @@ impl<T: Ord + Display> ExpansionStatistics<T> {
             .write(true)
             .truncate(true)
             .open(filename)?;
-        file.write_all(b"depth,f_value,expanded\n")?;
+        file.write_all(b"depth,f_value,g_value,expanded\n")?;
 
-        for (depth, f_value, count) in self.iter() {
+        for (depth, f_value, g_value, count) in self.iter() {
             let f_value = f_value.map_or_else(String::new, ToString::to_string);
-            writeln!(file, "{depth},{f_value},{count}")?;
+            writeln!(file, "{depth},{f_value},{g_value},{count}")?;
         }
 
         Ok(())
@@ -54,9 +54,9 @@ impl<T: Ord + Display> ExpansionStatistics<T> {
 
     fn serialize(&self) -> String {
         let mut serialized = String::new();
-        for (depth, f_value, count) in self.iter() {
+        for (depth, f_value, g_value, count) in self.iter() {
             let f_value = f_value.map_or_else(String::new, ToString::to_string);
-            serialized.push_str(&format!("{depth},{f_value},{count}\n"));
+            serialized.push_str(&format!("{depth},{f_value},{g_value},{count}\n"));
         }
         serialized
     }
@@ -70,7 +70,7 @@ where
     fn merge_serialized(&mut self, serialized: &[u8]) -> Result<(), Box<dyn Error>> {
         let serialized = std::str::from_utf8(serialized)?;
         for line in serialized.lines() {
-            let mut fields = line.splitn(3, ',');
+            let mut fields = line.splitn(4, ',');
             let depth = fields
                 .next()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing depth"))?
@@ -88,11 +88,21 @@ where
                     )
                 })?)
             };
+            let g_value = fields
+                .next()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing g-value"))?
+                .parse::<T>()
+                .map_err(|error| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!("invalid g-value: {error:?}"),
+                    )
+                })?;
             let count = fields
                 .next()
                 .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "missing count"))?
                 .parse::<usize>()?;
-            *self.counts.entry((depth, f_value)).or_default() += count;
+            *self.counts.entry((depth, f_value, g_value)).or_default() += count;
         }
         Ok(())
     }
@@ -132,28 +142,35 @@ mod tests {
     use super::*;
 
     #[test]
-    fn aggregate_by_depth_and_f_value() {
+    fn aggregate_by_depth_f_value_and_g_value() {
         let mut statistics = ExpansionStatistics::default();
-        statistics.record(1, Some(3));
-        statistics.record(1, Some(3));
-        statistics.record(2, Some(3));
-        statistics.record(2, None);
+        statistics.record(1, Some(3), 1);
+        statistics.record(1, Some(3), 1);
+        statistics.record(1, Some(3), 2);
+        statistics.record(2, Some(3), 2);
+        statistics.record(2, None, 2);
 
         assert_eq!(
             statistics.iter().collect::<Vec<_>>(),
-            vec![(1, Some(&3), 2), (2, None, 1), (2, Some(&3), 1)]
+            vec![
+                (1, Some(&3), &1, 2),
+                (1, Some(&3), &2, 1),
+                (2, None, &2, 1),
+                (2, Some(&3), &2, 1),
+            ]
         );
-        assert_eq!(statistics.total(), 4);
+        assert_eq!(statistics.total(), 5);
     }
 
     #[test]
     fn serialize_and_merge() {
         let mut first = ExpansionStatistics::default();
-        first.record(1, Some(3));
-        first.record(2, None);
+        first.record(1, Some(3), 1);
+        first.record(2, None, 2);
         let mut second = ExpansionStatistics::default();
-        second.record(1, Some(3));
-        second.record(2, Some(4));
+        second.record(1, Some(3), 1);
+        second.record(1, Some(3), 2);
+        second.record(2, Some(4), 2);
 
         first
             .merge_serialized(second.serialize().as_bytes())
@@ -161,8 +178,13 @@ mod tests {
 
         assert_eq!(
             first.iter().collect::<Vec<_>>(),
-            vec![(1, Some(&3), 2), (2, None, 1), (2, Some(&4), 1)]
+            vec![
+                (1, Some(&3), &1, 2),
+                (1, Some(&3), &2, 1),
+                (2, None, &2, 1),
+                (2, Some(&4), &2, 1),
+            ]
         );
-        assert_eq!(first.total(), 4);
+        assert_eq!(first.total(), 5);
     }
 }

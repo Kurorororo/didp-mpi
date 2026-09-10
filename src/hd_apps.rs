@@ -451,7 +451,7 @@ where
                 }
 
                 if let Some(statistics) = self.expansion_statistics.as_mut() {
-                    statistics.record(node.depth, node.bound(&self.model));
+                    statistics.record(node.depth, node.bound(&self.model), node.cost(&self.model));
                 }
                 let depth = node.depth;
                 goal_found |= self.search.expand(

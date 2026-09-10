@@ -696,7 +696,7 @@ where
 
             if let Some((node, depth)) = self.pop_node_and_depth() {
                 if let Some(statistics) = self.expansion_statistics.as_mut() {
-                    statistics.record(depth, node.bound(&self.model));
+                    statistics.record(depth, node.bound(&self.model), node.cost(&self.model));
                 }
                 self.search
                     .expand(node, &mut self.registry, &mut keep_buffer, &mut send_buffer);

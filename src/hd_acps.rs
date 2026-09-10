@@ -338,7 +338,11 @@ where
 
                 popped += 1;
                 if let Some(statistics) = self.expansion_statistics.as_mut() {
-                    statistics.record(current_depth, node.bound(&self.model));
+                    statistics.record(
+                        current_depth,
+                        node.bound(&self.model),
+                        node.cost(&self.model),
+                    );
                 }
                 goal_found |= self.search.expand(
                     node,
