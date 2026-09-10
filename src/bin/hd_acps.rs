@@ -28,6 +28,7 @@ struct AcpsParameters<T> {
     progressive_parameters: ProgressiveSearchParameters,
     f_evaluator_type: FEvaluatorType,
     record_expansion_statistics: bool,
+    record_width_statistics: bool,
 }
 
 fn main_with_cost_type_and_hash_function<T, H>(
@@ -46,6 +47,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
     let progressive_parameters = apps_parameters.progressive_parameters;
     let f_evaluator_type = apps_parameters.f_evaluator_type;
     let record_expansion_statistics = apps_parameters.record_expansion_statistics;
+    let record_width_statistics = apps_parameters.record_width_statistics;
 
     let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evaluators(
         model,
@@ -99,7 +101,20 @@ fn main_with_cost_type_and_hash_function<T, H>(
     if record_expansion_statistics {
         solver.enable_expansion_statistics();
     }
+    if record_width_statistics {
+        solver.enable_width_statistics();
+    }
     let (solution, statistics_list) = solver.search();
+
+    if let Some(statistics) = solver.width_statistics() {
+        let filename = format!("width_statistics_rank_{}.csv", communicator.rank());
+        statistics
+            .dump_to_csv(&filename, communicator.rank())
+            .unwrap();
+        if communicator.rank() == 0 {
+            println!("Width statistics: width_statistics_rank_<rank>.csv");
+        }
+    }
 
     if let Some(statistics) = solver.expansion_statistics() {
         let filename = format!("expansion_statistics_rank_{}.csv", communicator.rank());
@@ -145,6 +160,8 @@ fn main_with_cost_type<T>(
     let progressive_parameters = didp_mpi::load_progressive_parameters_from_map(map);
     let record_expansion_statistics =
         didp_mpi::load_bool_from_map(map, "record_expansion_statistics").unwrap_or(false);
+    let record_width_statistics =
+        didp_mpi::load_bool_from_map(map, "record_width_statistics").unwrap_or(false);
 
     if let Some(buffer_size) = additional_parameters.buffer_size {
         universe.set_buffer_size(buffer_size);
@@ -157,6 +174,7 @@ fn main_with_cost_type<T>(
         progressive_parameters,
         f_evaluator_type,
         record_expansion_statistics,
+        record_width_statistics,
     };
 
     match additional_parameters.hash_type {

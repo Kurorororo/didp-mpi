@@ -28,6 +28,7 @@ mod state_serializer;
 mod statistics;
 mod timestamped_communicator;
 mod util;
+mod width_statistics;
 
 pub use bfs_node_with_distributed_id_chain::NodeGenerationResult;
 pub use distributed_f_node::{DistributedFNode, FNodeEvaluators};
@@ -66,3 +67,4 @@ pub use util::{
     make_input, make_input_and_dual_bound_evaluators, make_input_and_mpi_dual_bound_evaluators,
     make_mpi_dual_bound_evaluators,
 };
+pub use width_statistics::{WidthEvent, WidthStatistics, WidthStatisticsRecord};

@@ -23,11 +23,11 @@ use crate::mpi_anytime_search::{
 use crate::node_communicator::TimeStampedNodeDepthCommunicator;
 use crate::node_message::NodeMessage;
 use crate::statistics::Statistics;
-use crate::ExpansionStatistics;
 use crate::{
     bfs_node_with_distributed_id_chain::{BfsNodeWithDistributedIdChain, NodeGenerationResult},
     distributed_id_chain::DistributedTransitionIdChain,
 };
+use crate::{ExpansionStatistics, WidthEvent, WidthStatistics, WidthStatisticsRecord};
 
 const TAG_NODE: Tag = TAG_OFFSET;
 const TAG_TIME_OUT: Tag = TAG_OFFSET + 1;
@@ -91,6 +91,7 @@ where
     is_checking_termination: bool,
     is_terminated: bool,
     expansion_statistics: Option<ExpansionStatistics<T>>,
+    width_statistics: Option<WidthStatistics>,
 }
 
 impl<'a, T, N, M, L, R, B, F, V> HdApps<'a, T, N, M, L, R, B, F, V>
@@ -178,6 +179,7 @@ where
             is_checking_termination: false,
             is_terminated: false,
             expansion_statistics: None,
+            width_statistics: None,
         }
     }
 
@@ -191,6 +193,43 @@ where
 
     pub fn expansion_statistics(&self) -> Option<&ExpansionStatistics<T>> {
         self.expansion_statistics.as_ref()
+    }
+
+    pub fn enable_width_statistics(&mut self) {
+        assert!(
+            self.search.local_statistics().expanded == 0,
+            "width statistics must be enabled before search"
+        );
+        self.width_statistics = Some(WidthStatistics::default());
+    }
+
+    pub fn width_statistics(&self) -> Option<&WidthStatistics> {
+        self.width_statistics.as_ref()
+    }
+
+    fn record_width_statistics(
+        &mut self,
+        event: WidthEvent,
+        previous_width: usize,
+        depth: Option<usize>,
+    ) {
+        if let Some(history) = self.width_statistics.as_mut() {
+            let statistics = self.search.local_statistics();
+            history.record(WidthStatisticsRecord {
+                elapsed_time: self.search.elapsed_time(),
+                event,
+                previous_width,
+                width: self.width,
+                depth,
+                expanded: statistics.expanded,
+                generated: statistics.generated,
+                sent: statistics.sent,
+                received: statistics.received,
+                open_entries: self.open.len(),
+                children_entries: self.children.len(),
+                suspended_entries: self.suspend.len(),
+            });
+        }
     }
 
     fn receive_node(&mut self, source_rank: Rank) {
@@ -328,6 +367,9 @@ where
         let mut goal_found = false;
         let mut keep_buffer = vec![];
         let mut send_buffer = vec![];
+        let mut last_expanded_depth = None;
+
+        self.record_width_statistics(WidthEvent::Start, self.width, last_expanded_depth);
 
         'outer: loop {
             self.process_message();
@@ -372,11 +414,19 @@ where
             }
 
             if self.open.is_empty() && !self.suspend.is_empty() {
+                let previous_width = self.width;
                 if self.progressive_parameters.reset && goal_found {
                     self.width = self.progressive_parameters.init;
                 } else {
                     self.width = self.progressive_parameters.increase_width(self.width);
                 }
+
+                let event = if goal_found {
+                    WidthEvent::GoalRefill
+                } else {
+                    WidthEvent::Refill
+                };
+                self.record_width_statistics(event, previous_width, last_expanded_depth);
 
                 while self.open.len() < self.width {
                     if let Some(node) = self.suspend.pop() {
@@ -454,6 +504,7 @@ where
                     statistics.record(node.depth, node.bound(&self.model), node.cost(&self.model));
                 }
                 let depth = node.depth;
+                last_expanded_depth = Some(depth);
                 goal_found |= self.search.expand(
                     node.node,
                     &mut self.registry,
@@ -496,6 +547,7 @@ where
             }
         }
 
+        self.record_width_statistics(WidthEvent::Finish, self.width, last_expanded_depth);
         self.communicator.barrier();
 
         let (mut solution, statistics) = self.search.finalize(self.local_dual_bound);
