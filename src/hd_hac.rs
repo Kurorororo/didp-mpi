@@ -8,9 +8,9 @@ use mpi::{topology::SimpleCommunicator, traits::*, Rank, Tag};
 use std::collections::BinaryHeap;
 use std::error::Error;
 use std::fmt::{Debug, Display};
-use std::fs::OpenOptions;
+use std::fs::{File, OpenOptions};
 use std::hash::Hash;
-use std::io::Write;
+use std::io::{self, Write};
 use std::mem;
 use std::rc::Rc;
 use std::str::FromStr;
@@ -66,6 +66,16 @@ pub struct HdHacMemoryStatistics {
 
 impl HdHacMemoryStatistics {
     pub fn dump_to_csv(list: &[Self], filename: &str) -> Result<(), Box<dyn Error>> {
+        let mut file = Self::create_csv(filename)?;
+
+        for statistics in list {
+            statistics.write_csv_row(&mut file)?;
+        }
+
+        Ok(())
+    }
+
+    fn create_csv(filename: &str) -> io::Result<File> {
         let mut file = OpenOptions::new()
             .create(true)
             .write(true)
@@ -75,49 +85,45 @@ impl HdHacMemoryStatistics {
             b"rank,elapsed_time,resident_memory_bytes,peak_resident_memory_bytes,virtual_memory_bytes,estimated_node_and_state_bytes_per_search_node,estimated_retained_node_and_state_bytes,open_list_allocated_bytes,transition_chain_allocated_bytes,estimated_search_data_structure_bytes,estimated_search_data_structure_bytes_per_search_node,primary_open_len,primary_open_capacity,layered_open_len,layered_open_capacity,layered_open_layers,registry_entries,registry_open_entries,registry_closed_entries,registry_inserted,registry_removed,transition_chain_nodes,expanded,generated,kept,sent,received\n",
         )?;
 
-        for statistics in list {
-            let line = format!(
-                "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
-                statistics.rank,
-                statistics.elapsed_time,
-                statistics
-                    .resident_memory_bytes
-                    .map_or_else(String::new, |value| value.to_string()),
-                statistics
-                    .peak_resident_memory_bytes
-                    .map_or_else(String::new, |value| value.to_string()),
-                statistics
-                    .virtual_memory_bytes
-                    .map_or_else(String::new, |value| value.to_string()),
-                statistics.estimated_node_and_state_bytes_per_search_node,
-                statistics.estimated_retained_node_and_state_bytes,
-                statistics.open_list_allocated_bytes,
-                statistics.transition_chain_allocated_bytes,
-                statistics.estimated_search_data_structure_bytes,
-                statistics
-                    .estimated_search_data_structure_bytes_per_search_node
-                    .map_or_else(String::new, |value| value.to_string()),
-                statistics.primary_open_len,
-                statistics.primary_open_capacity,
-                statistics.layered_open_len,
-                statistics.layered_open_capacity,
-                statistics.layered_open_layers,
-                statistics.registry_entries,
-                statistics.registry_open_entries,
-                statistics.registry_closed_entries,
-                statistics.registry_inserted,
-                statistics.registry_removed,
-                statistics.transition_chain_nodes,
-                statistics.expanded,
-                statistics.generated,
-                statistics.kept,
-                statistics.sent,
-                statistics.received,
-            );
-            file.write_all(line.as_bytes())?;
-        }
+        Ok(file)
+    }
 
-        Ok(())
+    fn write_csv_row(&self, file: &mut File) -> io::Result<()> {
+        let line = format!(
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            self.rank,
+            self.elapsed_time,
+            self.resident_memory_bytes
+                .map_or_else(String::new, |value| value.to_string()),
+            self.peak_resident_memory_bytes
+                .map_or_else(String::new, |value| value.to_string()),
+            self.virtual_memory_bytes
+                .map_or_else(String::new, |value| value.to_string()),
+            self.estimated_node_and_state_bytes_per_search_node,
+            self.estimated_retained_node_and_state_bytes,
+            self.open_list_allocated_bytes,
+            self.transition_chain_allocated_bytes,
+            self.estimated_search_data_structure_bytes,
+            self.estimated_search_data_structure_bytes_per_search_node
+                .map_or_else(String::new, |value| value.to_string()),
+            self.primary_open_len,
+            self.primary_open_capacity,
+            self.layered_open_len,
+            self.layered_open_capacity,
+            self.layered_open_layers,
+            self.registry_entries,
+            self.registry_open_entries,
+            self.registry_closed_entries,
+            self.registry_inserted,
+            self.registry_removed,
+            self.transition_chain_nodes,
+            self.expanded,
+            self.generated,
+            self.kept,
+            self.sent,
+            self.received,
+        );
+        file.write_all(line.as_bytes())
     }
 }
 
@@ -249,6 +255,7 @@ where
     next_memory_monitoring_time: f64,
     search_node_memory_layout: HdHacSearchNodeMemoryLayout,
     memory_statistics: Vec<HdHacMemoryStatistics>,
+    memory_statistics_file: Option<File>,
     expansion_statistics: Option<ExpansionStatistics<T>>,
 }
 
@@ -338,11 +345,13 @@ where
             next_memory_monitoring_time: 0.0,
             search_node_memory_layout,
             memory_statistics: vec![],
+            memory_statistics_file: None,
             expansion_statistics: None,
         }
     }
 
-    /// Enables memory monitoring. This should be called before [`Self::search`].
+    /// Enables memory monitoring, immediately writing the first sample and each subsequent
+    /// sample to `memory_statistics_rank_<rank>.csv`. Call this before [`Self::search`].
     pub fn enable_memory_monitoring(&mut self, interval: f64) {
         assert!(
             interval.is_finite() && interval > 0.0,
@@ -352,10 +361,16 @@ where
             self.memory_monitoring_interval.is_none(),
             "memory monitoring is already enabled"
         );
+        let filename = format!("memory_statistics_rank_{}.csv", self.communicator.rank());
+        self.memory_statistics_file = Some(
+            HdHacMemoryStatistics::create_csv(&filename)
+                .expect("failed to create memory statistics CSV"),
+        );
         self.search
             .enable_state_registry_statistics(self.open.len());
         self.memory_monitoring_interval = Some(interval);
         self.next_memory_monitoring_time = self.search.elapsed_time();
+        self.record_memory_statistics_if_due();
     }
 
     pub fn memory_statistics(&self) -> &[HdHacMemoryStatistics] {
@@ -424,7 +439,7 @@ where
             .saturating_add(transition_chain_allocated_bytes);
         let estimated_search_data_structure_bytes_per_search_node = (registry.entries > 0)
             .then(|| estimated_search_data_structure_bytes as f64 / registry.entries as f64);
-        self.memory_statistics.push(HdHacMemoryStatistics {
+        let statistics = HdHacMemoryStatistics {
             rank: self.communicator.rank(),
             elapsed_time,
             resident_memory_bytes: memory.resident_bytes,
@@ -454,7 +469,13 @@ where
             kept: local_statistics.kept,
             sent: local_statistics.sent,
             received: local_statistics.received,
-        });
+        };
+        if let Some(file) = self.memory_statistics_file.as_mut() {
+            statistics
+                .write_csv_row(file)
+                .expect("failed to write memory statistics CSV");
+        }
+        self.memory_statistics.push(statistics);
 
         while self.next_memory_monitoring_time <= elapsed_time {
             self.next_memory_monitoring_time += interval;

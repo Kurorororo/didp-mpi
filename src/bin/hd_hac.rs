@@ -1,6 +1,6 @@
 use didp_mpi::{
-    AdditionalCommonParameters, HashType, HdHac, HdHacMemoryStatistics, IsFloat,
-    MpiAnytimeSearchParameters, NodeMessage, Statistics, TAG_EXPANSION_STATISTICS,
+    AdditionalCommonParameters, HashType, HdHac, IsFloat, MpiAnytimeSearchParameters, NodeMessage,
+    Statistics, TAG_EXPANSION_STATISTICS,
 };
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{
@@ -216,10 +216,6 @@ fn main_with_cost_type_and_hash_function<T, H>(
     }
     let (solution, statistics_list) = solver.search();
 
-    if monitors_memory {
-        let filename = format!("memory_statistics_rank_{}.csv", communicator.rank());
-        HdHacMemoryStatistics::dump_to_csv(solver.memory_statistics(), &filename).unwrap();
-    }
     if let Some(statistics) = solver.expansion_statistics() {
         let filename = format!("expansion_statistics_rank_{}.csv", communicator.rank());
         statistics.dump_to_csv(&filename).unwrap();
