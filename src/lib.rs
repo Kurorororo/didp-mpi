@@ -21,6 +21,8 @@ mod mpi_termination_detector;
 mod node_communicator;
 mod node_data_type;
 mod node_message;
+#[cfg(feature = "memory-statistics")]
+pub mod node_memory;
 mod open_list;
 mod partial_solution;
 mod retrieve_solution;

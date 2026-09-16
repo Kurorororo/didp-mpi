@@ -101,6 +101,10 @@ impl MemoryMonitoringParameters {
     }
 
     fn validate(&self, n_processes: Rank) {
+        assert!(
+            !self.enabled || cfg!(feature = "memory-statistics"),
+            "memory_monitoring: true requires a build with --features memory-statistics"
+        );
         if let MemoryMonitoringProcesses::Ranks(ranks) = &self.processes {
             assert!(
                 ranks.iter().all(|rank| (0..n_processes).contains(rank)),
@@ -184,7 +188,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
         let layout = solver.search_node_memory_layout();
         println!("Estimated search-node storage layout:");
         println!(
-            "  node and state per retained node: {} bytes",
+            "  nominal node with one unshared signature and registry entry: {} bytes",
             layout.estimated_node_and_state_bytes
         );
         println!(
@@ -198,6 +202,14 @@ fn main_with_cost_type_and_hash_function<T, H>(
         println!(
             "    estimated state-registry entry: {} bytes",
             layout.state_registry_entry_bytes
+        );
+        println!(
+            "  memory estimate v2: {} bytes per live node + {} bytes per distinct signature",
+            layout.private_node_and_resource_bytes, layout.shared_signature_bytes
+        );
+        println!(
+            "  registry storage estimate: {} bytes per signature group + {} bytes per registered node",
+            layout.registry_signature_entry_bytes, layout.registry_node_reference_bytes
         );
         println!(
             "  transition chain per node: {} bytes",
@@ -332,6 +344,21 @@ fn main() {
 mod tests {
     use super::*;
     use yaml_rust::YamlLoader;
+
+    #[cfg(not(feature = "memory-statistics"))]
+    #[test]
+    #[should_panic(expected = "requires a build with --features memory-statistics")]
+    fn reject_memory_monitoring_without_compile_time_support() {
+        let yaml = YamlLoader::load_from_str("memory_monitoring: true").unwrap();
+        MemoryMonitoringParameters::load_from_map(yaml[0].as_hash().unwrap()).validate(1);
+    }
+
+    #[cfg(feature = "memory-statistics")]
+    #[test]
+    fn accept_memory_monitoring_with_compile_time_support() {
+        let yaml = YamlLoader::load_from_str("memory_monitoring: true").unwrap();
+        MemoryMonitoringParameters::load_from_map(yaml[0].as_hash().unwrap()).validate(1);
+    }
 
     #[test]
     fn load_default_memory_monitoring_parameters() {

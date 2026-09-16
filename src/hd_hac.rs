@@ -17,6 +17,8 @@ use std::str::FromStr;
 
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
 use crate::node_communicator::TimeStampedNodeDepthCommunicator;
+#[cfg(feature = "memory-statistics")]
+use crate::node_memory::LiveNodeCounter;
 use crate::open_list;
 use crate::{bfs_node_with_distributed_id_chain::NodeGenerationResult, is_float::IsFloat};
 use crate::{
@@ -62,6 +64,15 @@ pub struct HdHacMemoryStatistics {
     pub kept: usize,
     pub sent: usize,
     pub received: usize,
+    pub memory_estimate_version: usize,
+    pub live_nodes: usize,
+    pub live_nodes_created: usize,
+    pub live_nodes_dropped: usize,
+    pub live_nodes_outside_registry: usize,
+    pub registry_signatures: usize,
+    pub estimated_private_node_and_resource_bytes: usize,
+    pub estimated_shared_signature_bytes: usize,
+    pub estimated_registry_storage_bytes: usize,
 }
 
 impl HdHacMemoryStatistics {
@@ -82,15 +93,16 @@ impl HdHacMemoryStatistics {
             .truncate(true)
             .open(filename)?;
         file.write_all(
-            b"rank,elapsed_time,resident_memory_bytes,peak_resident_memory_bytes,virtual_memory_bytes,estimated_node_and_state_bytes_per_search_node,estimated_retained_node_and_state_bytes,open_list_allocated_bytes,transition_chain_allocated_bytes,estimated_search_data_structure_bytes,estimated_search_data_structure_bytes_per_search_node,primary_open_len,primary_open_capacity,layered_open_len,layered_open_capacity,layered_open_layers,registry_entries,registry_open_entries,registry_closed_entries,registry_inserted,registry_removed,transition_chain_nodes,expanded,generated,kept,sent,received\n",
+            b"rank,elapsed_time,resident_memory_bytes,peak_resident_memory_bytes,virtual_memory_bytes,estimated_node_and_state_bytes_per_search_node,estimated_retained_node_and_state_bytes,open_list_allocated_bytes,transition_chain_allocated_bytes,estimated_search_data_structure_bytes,estimated_search_data_structure_bytes_per_search_node,primary_open_len,primary_open_capacity,layered_open_len,layered_open_capacity,layered_open_layers,registry_entries,registry_open_entries,registry_closed_entries,registry_inserted,registry_removed,transition_chain_nodes,expanded,generated,kept,sent,received,",
         )?;
+        file.write_all(b"memory_estimate_version,live_nodes,live_nodes_created,live_nodes_dropped,live_nodes_outside_registry,registry_signatures,estimated_private_node_and_resource_bytes,estimated_shared_signature_bytes,estimated_registry_storage_bytes\n")?;
 
         Ok(file)
     }
 
     fn write_csv_row(&self, file: &mut File) -> io::Result<()> {
         let line = format!(
-            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},{},",
             self.rank,
             self.elapsed_time,
             self.resident_memory_bytes
@@ -123,7 +135,20 @@ impl HdHacMemoryStatistics {
             self.sent,
             self.received,
         );
-        file.write_all(line.as_bytes())
+        file.write_all(line.as_bytes())?;
+        let components = format!(
+            "{},{},{},{},{},{},{},{},{}\n",
+            self.memory_estimate_version,
+            self.live_nodes,
+            self.live_nodes_created,
+            self.live_nodes_dropped,
+            self.live_nodes_outside_registry,
+            self.registry_signatures,
+            self.estimated_private_node_and_resource_bytes,
+            self.estimated_shared_signature_bytes,
+            self.estimated_registry_storage_bytes
+        );
+        file.write_all(components.as_bytes())
     }
 }
 
@@ -138,6 +163,10 @@ pub struct HdHacSearchNodeMemoryLayout {
     pub primary_open_entry_bytes: usize,
     pub layered_open_entry_bytes: usize,
     pub estimated_node_and_state_bytes: usize,
+    pub private_node_and_resource_bytes: usize,
+    pub shared_signature_bytes: usize,
+    pub registry_signature_entry_bytes: usize,
+    pub registry_node_reference_bytes: usize,
 }
 
 impl HdHacSearchNodeMemoryLayout {
@@ -149,11 +178,18 @@ impl HdHacSearchNodeMemoryLayout {
         let state_inline_bytes = mem::size_of::<StateInRegistry>();
         let signature_variables_inline_bytes = mem::size_of::<HashableSignatureVariables>();
         let state_variable_payload_bytes = state_variable_payload_bytes(&model.target);
-        // StateRegistry groups nodes by signature. Estimate one signature and one Vec slot per
-        // retained node; dominance can make the actual grouping overhead smaller.
+        let registry_signature_entry_bytes =
+            mem::size_of::<(Rc<HashableSignatureVariables>, Vec<Rc<N>>)>();
+        let registry_node_reference_bytes = mem::size_of::<Rc<N>>();
         let state_registry_entry_bytes =
-            mem::size_of::<(Rc<HashableSignatureVariables>, Vec<Rc<N>>)>()
-                + mem::size_of::<Rc<N>>();
+            registry_signature_entry_bytes + registry_node_reference_bytes;
+        let resource_payload_bytes = state_resource_payload_bytes(&model.target);
+        let private_node_and_resource_bytes =
+            rc_allocation_overhead + search_node_inline_bytes + resource_payload_bytes;
+        let shared_signature_bytes = rc_allocation_overhead
+            + signature_variables_inline_bytes
+            + state_variable_payload_bytes
+            - resource_payload_bytes;
         let transition_chain_bytes =
             rc_allocation_overhead + mem::size_of::<DistributedTransitionIdChain>();
         let estimated_node_and_state_bytes = rc_allocation_overhead
@@ -173,10 +209,31 @@ impl HdHacSearchNodeMemoryLayout {
             primary_open_entry_bytes: mem::size_of::<(Rc<N>, usize)>(),
             layered_open_entry_bytes: mem::size_of::<Rc<N>>(),
             estimated_node_and_state_bytes,
+            private_node_and_resource_bytes,
+            shared_signature_bytes,
+            registry_signature_entry_bytes,
+            registry_node_reference_bytes,
         }
+    }
+
+    #[cfg(feature = "memory-statistics")]
+    fn retained_components(
+        &self,
+        live_nodes: usize,
+        signatures: usize,
+        registry_nodes: usize,
+    ) -> (usize, usize, usize) {
+        (
+            live_nodes.saturating_mul(self.private_node_and_resource_bytes),
+            signatures.saturating_mul(self.shared_signature_bytes),
+            signatures
+                .saturating_mul(self.registry_signature_entry_bytes)
+                .saturating_add(registry_nodes.saturating_mul(self.registry_node_reference_bytes)),
+        )
     }
 }
 
+#[cfg(any(test, feature = "memory-statistics"))]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 struct ProcessMemory {
     resident_bytes: Option<u64>,
@@ -184,6 +241,7 @@ struct ProcessMemory {
     virtual_bytes: Option<u64>,
 }
 
+#[cfg(any(test, feature = "memory-statistics"))]
 fn parse_linux_process_memory(status: &str) -> ProcessMemory {
     fn value_in_bytes(status: &str, key: &str) -> Option<u64> {
         let line = status.lines().find(|line| line.starts_with(key))?;
@@ -204,6 +262,7 @@ fn parse_linux_process_memory(status: &str) -> ProcessMemory {
     }
 }
 
+#[cfg(feature = "memory-statistics")]
 fn process_memory() -> ProcessMemory {
     std::fs::read_to_string("/proc/self/status")
         .map(|status| parse_linux_process_memory(&status))
@@ -231,6 +290,12 @@ fn state_variable_payload_bytes<S: StateInterface>(state: &S) -> usize {
         + state.get_number_of_continuous_resource_variables() * mem::size_of::<Continuous>()
 }
 
+fn state_resource_payload_bytes<S: StateInterface>(state: &S) -> usize {
+    state.get_number_of_element_resource_variables() * mem::size_of::<Element>()
+        + state.get_number_of_integer_resource_variables() * mem::size_of::<Integer>()
+        + state.get_number_of_continuous_resource_variables() * mem::size_of::<Continuous>()
+}
+
 pub struct HdHac<'a, T, N, M, L, R, B, F, V = Transition>
 where
     T: Numeric + IsFloat + Ord + Display,
@@ -252,9 +317,11 @@ where
     is_checking_termination: bool,
     is_terminated: bool,
     memory_monitoring_interval: Option<f64>,
+    #[cfg(feature = "memory-statistics")]
     next_memory_monitoring_time: f64,
     search_node_memory_layout: HdHacSearchNodeMemoryLayout,
     memory_statistics: Vec<HdHacMemoryStatistics>,
+    #[cfg(feature = "memory-statistics")]
     memory_statistics_file: Option<File>,
     expansion_statistics: Option<ExpansionStatistics<T>>,
 }
@@ -342,9 +409,11 @@ where
             is_checking_termination: false,
             is_terminated: false,
             memory_monitoring_interval: None,
+            #[cfg(feature = "memory-statistics")]
             next_memory_monitoring_time: 0.0,
             search_node_memory_layout,
             memory_statistics: vec![],
+            #[cfg(feature = "memory-statistics")]
             memory_statistics_file: None,
             expansion_statistics: None,
         }
@@ -352,6 +421,8 @@ where
 
     /// Enables memory monitoring, immediately writing the first sample and each subsequent
     /// sample to `memory_statistics_rank_<rank>.csv`. Call this before [`Self::search`].
+    /// Requires the Cargo feature `memory-statistics`.
+    #[cfg(feature = "memory-statistics")]
     pub fn enable_memory_monitoring(&mut self, interval: f64) {
         assert!(
             interval.is_finite() && interval > 0.0,
@@ -366,11 +437,21 @@ where
             HdHacMemoryStatistics::create_csv(&filename)
                 .expect("failed to create memory statistics CSV"),
         );
+        let counter = Rc::new(LiveNodeCounter::default());
+        for (node, _) in &self.open {
+            node.track_memory(&counter);
+        }
         self.search
-            .enable_state_registry_statistics(self.open.len());
+            .enable_state_registry_statistics(self.open.len(), counter);
         self.memory_monitoring_interval = Some(interval);
         self.next_memory_monitoring_time = self.search.elapsed_time();
         self.record_memory_statistics_if_due();
+    }
+
+    /// Memory monitoring requires a build with `--features memory-statistics`.
+    #[cfg(not(feature = "memory-statistics"))]
+    pub fn enable_memory_monitoring(&mut self, _interval: f64) {
+        panic!("memory monitoring requires a build with --features memory-statistics");
     }
 
     pub fn memory_statistics(&self) -> &[HdHacMemoryStatistics] {
@@ -393,6 +474,11 @@ where
         self.search_node_memory_layout
     }
 
+    #[cfg(not(feature = "memory-statistics"))]
+    #[inline]
+    fn record_memory_statistics_if_due(&mut self) {}
+
+    #[cfg(feature = "memory-statistics")]
     fn record_memory_statistics_if_due(&mut self) {
         let Some(interval) = self.memory_monitoring_interval else {
             return;
@@ -430,15 +516,25 @@ where
                     .transition_chain_capacity()
                     .saturating_mul(mem::size_of::<Rc<DistributedTransitionIdChain>>()),
             );
-        let estimated_retained_node_and_state_bytes = registry.entries.saturating_mul(
-            self.search_node_memory_layout
-                .estimated_node_and_state_bytes,
+        let live_nodes = self.search.live_node_statistics();
+        let registry_signatures = self.registry.signature_count();
+        let (
+            estimated_private_node_and_resource_bytes,
+            estimated_shared_signature_bytes,
+            estimated_registry_storage_bytes,
+        ) = self.search_node_memory_layout.retained_components(
+            live_nodes.live,
+            registry_signatures,
+            registry.entries,
         );
+        let estimated_retained_node_and_state_bytes = estimated_private_node_and_resource_bytes
+            .saturating_add(estimated_shared_signature_bytes)
+            .saturating_add(estimated_registry_storage_bytes);
         let estimated_search_data_structure_bytes = estimated_retained_node_and_state_bytes
             .saturating_add(open_list_allocated_bytes)
             .saturating_add(transition_chain_allocated_bytes);
-        let estimated_search_data_structure_bytes_per_search_node = (registry.entries > 0)
-            .then(|| estimated_search_data_structure_bytes as f64 / registry.entries as f64);
+        let estimated_search_data_structure_bytes_per_search_node = (live_nodes.live > 0)
+            .then(|| estimated_search_data_structure_bytes as f64 / live_nodes.live as f64);
         let statistics = HdHacMemoryStatistics {
             rank: self.communicator.rank(),
             elapsed_time,
@@ -469,6 +565,18 @@ where
             kept: local_statistics.kept,
             sent: local_statistics.sent,
             received: local_statistics.received,
+            memory_estimate_version: 2,
+            live_nodes: live_nodes.live,
+            live_nodes_created: live_nodes.created,
+            live_nodes_dropped: live_nodes.dropped,
+            live_nodes_outside_registry: live_nodes
+                .live
+                .checked_sub(registry.entries)
+                .expect("registry entries exceed tracked live nodes"),
+            registry_signatures,
+            estimated_private_node_and_resource_bytes,
+            estimated_shared_signature_bytes,
+            estimated_registry_storage_bytes,
         };
         if let Some(file) = self.memory_statistics_file.as_mut() {
             statistics
@@ -776,6 +884,150 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "memory-statistics")]
+    use crate::DistributedFNode;
+    #[cfg(feature = "memory-statistics")]
+    use dypdl_heuristic_search::search_algorithm::data_structure::StateInformation;
+
+    #[cfg(feature = "memory-statistics")]
+    fn memory_test_state(signature: Integer, resource: Integer) -> State {
+        State {
+            signature_variables: SignatureVariables {
+                integer_variables: vec![signature],
+                ..Default::default()
+            },
+            resource_variables: ResourceVariables {
+                integer_variables: vec![resource],
+                ..Default::default()
+            },
+        }
+    }
+
+    #[cfg(feature = "memory-statistics")]
+    fn memory_test_model() -> Rc<Model> {
+        let mut model = Model::default();
+        model.state_metadata.integer_variable_names = vec!["signature".into()];
+        model.state_metadata.integer_resource_variable_names = vec!["resource".into()];
+        model.state_metadata.integer_less_is_better = vec![true];
+        model.target = memory_test_state(0, 0);
+        Rc::new(model)
+    }
+
+    #[cfg(feature = "memory-statistics")]
+    fn memory_test_node(
+        signature: Integer,
+        resource: Integer,
+        cost: Integer,
+    ) -> DistributedFNode<Integer> {
+        DistributedFNode::new(
+            StateInRegistry::from(memory_test_state(signature, resource)),
+            cost,
+            0,
+            -cost,
+            Rc::new(DistributedTransitionIdChain::default()),
+        )
+    }
+
+    #[cfg(feature = "memory-statistics")]
+    #[test]
+    fn shared_signatures_and_dominated_nodes_in_two_queues() {
+        let model = memory_test_model();
+        let layout = HdHacSearchNodeMemoryLayout::with_model::<DistributedFNode<Integer>>(&model);
+        let mut registry = StateRegistry::new(model);
+        let counter = Rc::new(LiveNodeCounter::default());
+        let mut primary = Vec::new();
+        let mut layered = Vec::new();
+        for (resource, cost) in [(1, 10), (2, 5)] {
+            let node = registry
+                .insert(memory_test_node(7, resource, cost))
+                .information
+                .unwrap();
+            node.track_memory(&counter);
+            primary.push(node.clone());
+            layered.push(node);
+        }
+        assert_eq!(registry.signature_count(), 1);
+        assert_eq!(counter.statistics().live, 2);
+        assert!(Rc::ptr_eq(
+            &primary[0].state().signature_variables,
+            &primary[1].state().signature_variables
+        ));
+        assert!(registry
+            .insert(memory_test_node(7, 3, 20))
+            .information
+            .is_none());
+        assert_eq!(registry.signature_count(), 1);
+
+        let result = registry.insert(memory_test_node(7, 0, 1));
+        let replacement = result.information.unwrap();
+        replacement.track_memory(&counter);
+        assert_eq!(result.dominated.len(), 2);
+        for old in &result.dominated {
+            old.close();
+        }
+        drop(result.dominated);
+        assert_eq!(counter.statistics().live, 3);
+        assert_eq!(registry.signature_count(), 1);
+        let (private, shared, storage) =
+            layout.retained_components(3, registry.signature_count(), 1);
+        assert_eq!(private, 3 * layout.private_node_and_resource_bytes);
+        assert_eq!(shared, layout.shared_signature_bytes);
+        assert_eq!(
+            storage,
+            layout.registry_signature_entry_bytes + layout.registry_node_reference_bytes
+        );
+        primary.clear();
+        assert_eq!(counter.statistics().live, 3);
+        layered.clear();
+        assert_eq!(counter.statistics().live, 1);
+        assert_eq!(counter.statistics().dropped, 2);
+
+        let separate = registry
+            .insert(memory_test_node(8, 0, 1))
+            .information
+            .unwrap();
+        separate.track_memory(&counter);
+        assert_eq!(registry.signature_count(), 2);
+        drop(separate);
+        drop(replacement);
+        registry.clear();
+        assert_eq!(counter.statistics().live, 0);
+        assert_eq!(registry.signature_count(), 0);
+    }
+
+    #[cfg(feature = "memory-statistics")]
+    #[test]
+    fn bound_pruned_replacement_retains_the_signature_key() {
+        let mut registry = StateRegistry::new(memory_test_model());
+        let counter = Rc::new(LiveNodeCounter::default());
+        let queue_node = registry
+            .insert(memory_test_node(7, 1, 10))
+            .information
+            .unwrap();
+        queue_node.track_memory(&counter);
+        let result = registry.insert_with(
+            StateInRegistry::from(memory_test_state(7, 0)),
+            1,
+            |_, _, _| None,
+        );
+        assert!(result.information.is_none());
+        assert_eq!(result.dominated.len(), 1);
+        drop(result);
+        assert_eq!(registry.signature_count(), 1);
+        assert_eq!(counter.statistics().live, 1);
+        drop(queue_node);
+        assert_eq!(counter.statistics().live, 0);
+        assert_eq!(registry.signature_count(), 1);
+        assert!(registry
+            .insert_with(
+                StateInRegistry::from(memory_test_state(8, 0)),
+                1,
+                |_, _, _| None
+            )
+            .information
+            .is_none());
+        assert_eq!(registry.signature_count(), 1);
+    }
 
     #[test]
     fn parse_process_memory_from_linux_status() {

@@ -1,9 +1,13 @@
 use std::fmt::Display;
+#[cfg(feature = "memory-statistics")]
+use std::rc::Rc;
 
 use dypdl::variable_type::Numeric;
 use dypdl_heuristic_search::search_algorithm::data_structure::StateInformation;
 
 use crate::distributed_id_chain::GeRcDistributedTransitionIdChain;
+#[cfg(feature = "memory-statistics")]
+use crate::node_memory::LiveNodeCounter;
 
 pub trait BfsNodeWithDistributedIdChain<T>:
     Ord + StateInformation<T> + GeRcDistributedTransitionIdChain
@@ -11,6 +15,11 @@ where
     T: Numeric + Display,
 {
     fn ordered_by_bound() -> bool;
+
+    #[cfg(feature = "memory-statistics")]
+    fn track_memory(&self, _counter: &Rc<LiveNodeCounter>) {
+        panic!("this node type does not support live-node memory monitoring");
+    }
 }
 
 #[derive(Clone)]

@@ -895,6 +895,8 @@ where
     id_to_chain_node: Vec<Rc<DistributedTransitionIdChain>>,
     solution_manager: MpiSolutionManager<'a, T, B, V>,
     state_registry_statistics: Option<StateRegistryStatistics>,
+    #[cfg(feature = "memory-statistics")]
+    node_memory_counter: Option<Rc<crate::node_memory::LiveNodeCounter>>,
     _phantom: PhantomData<(N, M)>,
 }
 
@@ -982,6 +984,8 @@ where
             id_to_chain_node: Vec::default(),
             solution_manager,
             state_registry_statistics: None,
+            #[cfg(feature = "memory-statistics")]
+            node_memory_counter: None,
             _phantom: PhantomData,
         }
     }
@@ -1014,25 +1018,42 @@ where
         &self.solution_manager.statistics
     }
 
+    #[cfg(feature = "memory-statistics")]
     pub(crate) fn state_registry_statistics(&self) -> StateRegistryStatistics {
         self.state_registry_statistics
             .expect("state registry statistics are not enabled")
     }
 
+    #[cfg(feature = "memory-statistics")]
     pub(crate) fn transition_chain_nodes(&self) -> usize {
         self.id_to_chain_node.len()
     }
 
+    #[cfg(feature = "memory-statistics")]
     pub(crate) fn transition_chain_capacity(&self) -> usize {
         self.id_to_chain_node.capacity()
     }
 
-    pub(crate) fn enable_state_registry_statistics(&mut self, initial_entries: usize) {
+    #[cfg(feature = "memory-statistics")]
+    pub(crate) fn enable_state_registry_statistics(
+        &mut self,
+        initial_entries: usize,
+        counter: Rc<crate::node_memory::LiveNodeCounter>,
+    ) {
+        self.node_memory_counter = Some(counter);
         self.state_registry_statistics = Some(StateRegistryStatistics {
             entries: initial_entries,
             inserted: initial_entries,
             ..Default::default()
         });
+    }
+
+    #[cfg(feature = "memory-statistics")]
+    pub(crate) fn live_node_statistics(&self) -> crate::node_memory::LiveNodeStatistics {
+        self.node_memory_counter
+            .as_ref()
+            .expect("memory monitoring is disabled")
+            .statistics()
     }
 
     pub(crate) fn close_registry_entries(&mut self, n: usize) {
@@ -1047,6 +1068,10 @@ where
 
     pub fn open_node(&mut self, node: N, registry: &mut StateRegistry<T, N>) -> Option<Rc<N>> {
         let result = registry.insert(node);
+        #[cfg(feature = "memory-statistics")]
+        if let (Some(counter), Some(node)) = (&self.node_memory_counter, &result.information) {
+            node.track_memory(counter);
+        }
         if let Some(statistics) = self.state_registry_statistics.as_mut() {
             let closed_removed = result
                 .dominated
@@ -1080,6 +1105,10 @@ where
 
     pub fn close_node(&mut self, node: N, registry: &mut StateRegistry<T, N>) {
         let result = registry.insert(node);
+        #[cfg(feature = "memory-statistics")]
+        if let (Some(counter), Some(node)) = (&self.node_memory_counter, &result.information) {
+            node.track_memory(counter);
+        }
         if let Some(statistics) = self.state_registry_statistics.as_mut() {
             let closed_removed = result
                 .dominated
@@ -1229,6 +1258,10 @@ where
                         registry,
                         self.solution_manager.get_primal_bound(),
                     );
+                    #[cfg(feature = "memory-statistics")]
+                    if let (Some(counter), Some(node)) = (&self.node_memory_counter, &result.node) {
+                        node.track_memory(counter);
+                    }
                     if let Some(statistics) = self.state_registry_statistics.as_mut() {
                         statistics.update_after_insertion(
                             result.node.is_some(),

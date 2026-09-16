@@ -3,6 +3,8 @@ use crate::distributed_f_node_message::DistributedFNodeMessage;
 use crate::distributed_id_chain::GeRcDistributedTransitionIdChain;
 use crate::is_float::IsFloat;
 use crate::node_data_type::NodeDatatype;
+#[cfg(feature = "memory-statistics")]
+use crate::node_memory::{LiveNodeCounter, NodeMemoryToken};
 use crate::state_serializer::StateSerializer;
 use crate::{
     bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain,
@@ -35,6 +37,8 @@ where
     state: StateInRegistry,
     transition_id_chain: Rc<DistributedTransitionIdChain>,
     closed: Cell<bool>,
+    #[cfg(feature = "memory-statistics")]
+    memory_token: NodeMemoryToken,
 }
 
 /// Evaluators for FNode.
@@ -63,6 +67,8 @@ where
             h,
             f,
             closed: Cell::new(false),
+            #[cfg(feature = "memory-statistics")]
+            memory_token: NodeMemoryToken::default(),
             transition_id_chain,
         }
     }
@@ -385,6 +391,11 @@ where
     fn ordered_by_bound() -> bool {
         true
     }
+
+    #[cfg(feature = "memory-statistics")]
+    fn track_memory(&self, counter: &Rc<LiveNodeCounter>) {
+        self.memory_token.track(counter);
+    }
 }
 
 impl<T> NodeDatatype<T> for DistributedFNode<T>
@@ -546,6 +557,41 @@ mod tests {
     use dypdl::variable_type::OrderedContinuous;
 
     use super::*;
+
+    #[test]
+    fn node_size_matches_compile_time_tracking_mode() {
+        // Reference layout before lifetime tracking was introduced.
+        #[allow(dead_code)]
+        struct UntrackedNode<T: Numeric> {
+            g: T,
+            h: T,
+            f: T,
+            state: StateInRegistry,
+            transition_id_chain: Rc<DistributedTransitionIdChain>,
+            closed: Cell<bool>,
+        }
+
+        fn check<T: Numeric>() {
+            let baseline = mem::size_of::<UntrackedNode<T>>();
+            let actual = mem::size_of::<DistributedFNode<T>>();
+            #[cfg(not(feature = "memory-statistics"))]
+            assert_eq!(actual, baseline, "disabled tracking must not enlarge nodes");
+            #[cfg(feature = "memory-statistics")]
+            {
+                let alignment = mem::align_of::<DistributedFNode<T>>();
+                let expected = (baseline + mem::size_of::<NodeMemoryToken>() + alignment - 1)
+                    / alignment
+                    * alignment;
+                assert_eq!(actual, expected);
+            }
+            println!(
+                "node bytes: untracked={baseline}, compiled={actual}, memory-statistics={}",
+                cfg!(feature = "memory-statistics")
+            );
+        }
+        check::<Integer>();
+        check::<dypdl::variable_type::OrderedContinuous>();
+    }
 
     #[test]
     fn generate_root_node_some_min() {
@@ -2050,6 +2096,8 @@ mod tests {
             f: -42,
             transition_id_chain: Rc::new(successor.clone()),
             closed: Cell::new(false),
+            #[cfg(feature = "memory-statistics")]
+            memory_token: NodeMemoryToken::default(),
         };
 
         let serializer = StateSerializer::with_model(&model);
@@ -2090,6 +2138,8 @@ mod tests {
             f: OrderedContinuous::from(-4.2),
             transition_id_chain: Rc::new(successor.clone()),
             closed: Cell::new(false),
+            #[cfg(feature = "memory-statistics")]
+            memory_token: NodeMemoryToken::default(),
         };
 
         let serializer = StateSerializer::with_model(&model);
