@@ -24,6 +24,7 @@ mod node_message;
 #[cfg(feature = "memory-statistics")]
 pub mod node_memory;
 mod open_list;
+pub mod operation_timing;
 mod partial_solution;
 mod retrieve_solution;
 mod state_serializer;

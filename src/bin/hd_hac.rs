@@ -1,3 +1,4 @@
+use didp_mpi::operation_timing::OperationTimingParameters;
 use didp_mpi::{
     AdditionalCommonParameters, HashType, HdHac, IsFloat, MpiAnytimeSearchParameters, NodeMessage,
     Statistics, TAG_EXPANSION_STATISTICS,
@@ -42,12 +43,14 @@ struct MemoryMonitoringParameters {
 struct InstrumentationParameters {
     memory_monitoring: MemoryMonitoringParameters,
     record_expansion_statistics: bool,
+    operation_timing: OperationTimingParameters,
 }
 
 impl InstrumentationParameters {
     fn load_from_map(map: &LinkedHashMap<Yaml, Yaml>) -> Self {
         Self {
             memory_monitoring: MemoryMonitoringParameters::load_from_map(map),
+            operation_timing: OperationTimingParameters::load_from_map(map),
             record_expansion_statistics: didp_mpi::load_bool_from_map(
                 map,
                 "record_expansion_statistics",
@@ -139,7 +142,9 @@ fn main_with_cost_type_and_hash_function<T, H>(
     let InstrumentationParameters {
         memory_monitoring,
         record_expansion_statistics,
+        operation_timing,
     } = instrumentation;
+    operation_timing.validate();
     let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evaluators(
         model,
         f_evaluator_type,
@@ -183,6 +188,10 @@ fn main_with_cost_type_and_hash_function<T, H>(
         println!("Time for initialization: {}s", time_keeper.elapsed_time());
     }
 
+    #[cfg(feature = "operation-timing")]
+    if operation_timing.enabled {
+        didp_mpi::operation_timing::start(operation_timing.sample_interval);
+    }
     let mut solver = HdHac::new(input, evaluators, parameters, hash_function, &communicator);
     if communicator.rank() == 0 && memory_monitoring.enabled {
         let layout = solver.search_node_memory_layout();
@@ -227,6 +236,15 @@ fn main_with_cost_type_and_hash_function<T, H>(
         solver.enable_expansion_statistics();
     }
     let (solution, statistics_list) = solver.search();
+
+    #[cfg(feature = "operation-timing")]
+    if operation_timing.enabled {
+        didp_mpi::operation_timing::finish_and_dump(&communicator, operation_timing.sample_interval)
+            .expect("failed to write operation timing CSVs");
+        if communicator.rank() == 0 {
+            println!("Operation timings: operation_timing.csv and operation_timing_rank_<rank>.csv");
+        }
+    }
 
     if let Some(statistics) = solver.expansion_statistics() {
         let filename = format!("expansion_statistics_rank_{}.csv", communicator.rank());

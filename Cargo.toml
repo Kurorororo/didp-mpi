@@ -8,6 +8,8 @@ rust-version = "1.82"
 default = []
 # Enables HAC memory CSVs and per-node lifetime tracking. Adds one handle/node.
 memory-statistics = []
+# Enables opt-in, per-rank HAC operation timings, including the vendored registry.
+operation-timing = ["dypdl-heuristic-search/operation-timing"]
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 

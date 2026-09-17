@@ -7,6 +7,20 @@ use dypdl::variable_type::Numeric;
 use dypdl_heuristic_search::search_algorithm::data_structure;
 
 use crate::bfs_node_with_distributed_id_chain::BfsNodeWithDistributedIdChain;
+#[cfg(feature = "operation-timing")]
+use dypdl_heuristic_search::operation_timing::{Operation, Timer};
+
+pub(crate) fn push_primary<N: Ord>(open: &mut BinaryHeap<N>, node: N) {
+    #[cfg(feature = "operation-timing")]
+    let _timer = Timer::start(Operation::HeapPrimaryPush, open.len());
+    open.push(node);
+}
+
+pub(crate) fn push_layered<N: Ord>(open: &mut BinaryHeap<N>, node: N) {
+    #[cfg(feature = "operation-timing")]
+    let _timer = Timer::start(Operation::HeapLayeredPush, open.len());
+    open.push(node);
+}
 
 pub fn pop_from_queue<T, N>(
     open: &mut VecDeque<Rc<N>>,
@@ -59,7 +73,18 @@ where
 {
     let mut closed = 0;
 
-    while let Some(node) = open.pop() {
+    while let Some(node) = {
+        #[cfg(feature = "operation-timing")]
+        let _timer = Timer::start(
+            if open.is_empty() {
+                Operation::HeapLayeredEmptyPop
+            } else {
+                Operation::HeapLayeredPop
+            },
+            open.len(),
+        );
+        open.pop()
+    } {
         if node.is_closed() {
             continue;
         }
@@ -71,6 +96,8 @@ where
             data_structure::exceed_bound(model, bound, primal_bound)
         }) {
             if N::ordered_by_bound() {
+                #[cfg(feature = "operation-timing")]
+                let _timer = Timer::start(Operation::HeapLayeredClear, open.len());
                 open.clear();
 
                 return (None, closed);
@@ -108,7 +135,18 @@ where
 {
     let mut closed = 0;
 
-    while let Some((node, depth)) = open.pop() {
+    while let Some((node, depth)) = {
+        #[cfg(feature = "operation-timing")]
+        let _timer = Timer::start(
+            if open.is_empty() {
+                Operation::HeapPrimaryEmptyPop
+            } else {
+                Operation::HeapPrimaryPop
+            },
+            open.len(),
+        );
+        open.pop()
+    } {
         if node.is_closed() {
             continue;
         }
@@ -120,6 +158,8 @@ where
             data_structure::exceed_bound(model, bound, primal_bound)
         }) {
             if N::ordered_by_bound() {
+                #[cfg(feature = "operation-timing")]
+                let _timer = Timer::start(Operation::HeapPrimaryClear, open.len());
                 open.clear();
 
                 return (None, closed);
@@ -139,6 +179,74 @@ mod tests {
     use data_structure::StateInRegistry;
     use dypdl_heuristic_search::search_algorithm::data_structure::StateInformation;
     use std::cell::Cell;
+
+    #[cfg(feature = "operation-timing")]
+    #[test]
+    fn timing_counts_raw_pops_including_stale_and_empty() {
+        use dypdl_heuristic_search::operation_timing;
+        let model = Model::default();
+        let mut primary = BinaryHeap::new();
+        let mut layered = BinaryHeap::new();
+        let stale = Rc::new(MockGNode::new(0));
+        stale.close();
+        operation_timing::start(1);
+        push_primary(&mut primary, (stale.clone(), 0));
+        push_primary(&mut primary, (Rc::new(MockGNode::new(1)), 1));
+        push_layered(&mut layered, stale);
+        push_layered(&mut layered, Rc::new(MockGNode::new(1)));
+        assert!(pop_from_open_with_depth(&mut primary, &model, None).is_some());
+        assert!(pop_from_open_with_depth(&mut primary, &model, None).is_none());
+        assert!(pop_from_open(&mut layered, &model, None).is_some());
+        assert!(pop_from_open(&mut layered, &model, None).is_none());
+        let measurements = operation_timing::finish();
+        for operation in [Operation::HeapPrimaryPush, Operation::HeapLayeredPush] {
+            assert_eq!(measurements[operation as usize].calls, 2);
+            assert_eq!(measurements[operation as usize].size_sum, 1);
+        }
+        for operation in [Operation::HeapPrimaryPop, Operation::HeapLayeredPop] {
+            let measurement = measurements[operation as usize];
+            assert_eq!(measurement.calls, 2);
+            assert_eq!(measurement.timed_calls, 2);
+            assert_eq!(measurement.zero_size_calls, 0);
+            assert_eq!(measurement.size_sum, 3);
+        }
+        for operation in [
+            Operation::HeapPrimaryEmptyPop,
+            Operation::HeapLayeredEmptyPop,
+        ] {
+            let measurement = measurements[operation as usize];
+            assert_eq!(measurement.calls, 1);
+            assert_eq!(measurement.timed_calls, 1);
+            assert_eq!(measurement.zero_size_calls, 1);
+            assert_eq!(measurement.size_sum, 0);
+        }
+    }
+
+    #[cfg(feature = "operation-timing")]
+    #[test]
+    fn timing_separates_bound_clears_from_pops() {
+        use dypdl_heuristic_search::operation_timing;
+        let model = Model::default();
+        let mut primary = BinaryHeap::new();
+        let mut layered = BinaryHeap::new();
+        for cost in [3, 4] {
+            primary.push((Rc::new(MockFNode::new(cost, 1)), 0));
+            layered.push(Rc::new(MockFNode::new(cost, 1)));
+        }
+        operation_timing::start(1);
+        assert!(pop_from_open_with_depth(&mut primary, &model, Some(1)).is_none());
+        assert!(pop_from_open(&mut layered, &model, Some(1)).is_none());
+        let measurements = operation_timing::finish();
+        for operation in [Operation::HeapPrimaryClear, Operation::HeapLayeredClear] {
+            let measurement = measurements[operation as usize];
+            assert_eq!(measurement.calls, 1);
+            assert_eq!(measurement.timed_calls, 1);
+            assert_eq!(measurement.size_sum, 1);
+        }
+        for operation in [Operation::HeapPrimaryPop, Operation::HeapLayeredPop] {
+            assert_eq!(measurements[operation as usize].calls, 1);
+        }
+    }
 
     use crate::distributed_id_chain::{
         DistributedTransitionIdChain, GeRcDistributedTransitionIdChain,

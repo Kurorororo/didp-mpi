@@ -390,7 +390,7 @@ where
         }
 
         if let Some(node) = search.generate_root_node(input.node, &mut registry) {
-            open.push((node, 0));
+            open_list::push_primary(&mut open, (node, 0));
         }
 
         Self {
@@ -600,13 +600,13 @@ where
 
     fn open_node(&mut self, node: N, depth: usize) {
         if let Some(node) = self.search.open_node(node, &mut self.registry) {
-            self.open.push((node.clone(), depth));
+            open_list::push_primary(&mut self.open, (node.clone(), depth));
 
             while depth >= self.layered_open.len() {
                 self.layered_open.push(BinaryHeap::new());
             }
 
-            self.layered_open[depth].push(node);
+            open_list::push_layered(&mut self.layered_open[depth], node);
         }
     }
 
@@ -836,13 +836,13 @@ where
                 }
 
                 for successor in keep_buffer.drain(..) {
-                    self.open.push((successor.clone(), depth + 1));
+                    open_list::push_primary(&mut self.open, (successor.clone(), depth + 1));
 
                     while depth + 1 >= self.layered_open.len() {
                         self.layered_open.push(BinaryHeap::new());
                     }
 
-                    self.layered_open[depth + 1].push(successor);
+                    open_list::push_layered(&mut self.layered_open[depth + 1], successor);
                 }
             } else if self.communicator.rank() == self.search.get_root_rank()
                 && !self.is_checking_termination

@@ -1,6 +1,8 @@
 //! A module for state registries for duplicate detection.
 
 use super::hashable_state::{HashableSignatureVariables, StateWithHashableSignatureVariables};
+#[cfg(feature = "operation-timing")]
+use crate::operation_timing::{Operation, Timer};
 use core::ops::Deref;
 use dypdl::{prelude::*, variable_type::Numeric, ReduceFunction};
 use rustc_hash::FxHashMap;
@@ -190,11 +192,18 @@ where
     I: StateInformation<T, K>,
     D: Deref<Target = I>,
 {
+    #[cfg(feature = "operation-timing")]
+    let _scan_timer = Timer::start(Operation::DominanceScan, non_dominated.len());
     let mut same_state_index = None;
     let mut dominated_indices = SmallVec::<[usize; 1]>::new();
 
     for (i, other) in non_dominated.iter().enumerate() {
-        match model.state_metadata.dominance(state, other.state()) {
+        let dominance = {
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(Operation::DominanceCompare, 1);
+            model.state_metadata.dominance(state, other.state())
+        };
+        match dominance {
             Some(Ordering::Equal) | Some(Ordering::Less)
                 if (model.reduce_function == ReduceFunction::Max && cost <= other.cost(model))
                     || (model.reduce_function == ReduceFunction::Min
@@ -448,7 +457,13 @@ where
     where
         F: FnOnce(StateInRegistry, T, Option<&I>) -> Option<I>,
     {
-        let entry = self.registry.entry(state.signature_variables.clone());
+        #[cfg(feature = "operation-timing")]
+        let _insert_timer = Timer::start(Operation::RegistryInsertWith, self.registry.len());
+        let entry = {
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(Operation::RegistryLookup, self.registry.len());
+            self.registry.entry(state.signature_variables.clone())
+        };
         match entry {
             collections::hash_map::Entry::Occupied(entry) => {
                 // use signature variables already stored
@@ -502,9 +517,14 @@ where
 
     /// Inserts state information.
     pub fn insert(&mut self, mut information: I) -> InsertionResult<Rc<I>> {
-        let entry = self
-            .registry
-            .entry(information.state().signature_variables.clone());
+        #[cfg(feature = "operation-timing")]
+        let _insert_timer = Timer::start(Operation::RegistryInsert, self.registry.len());
+        let entry = {
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(Operation::RegistryLookup, self.registry.len());
+            self.registry
+                .entry(information.state().signature_variables.clone())
+        };
         let (v, removed) = match entry {
             collections::hash_map::Entry::Occupied(entry) => {
                 // use signature variables already stored
@@ -593,6 +613,57 @@ mod tests {
     }
 
     impl Eq for MockInformation {}
+
+    #[cfg(feature = "operation-timing")]
+    #[test]
+    fn insertion_timing_counts_all_paths() {
+        use crate::operation_timing::{self, Operation};
+        let mut registry = StateRegistry::<i32, MockInformation>::new(Rc::new(generate_model()));
+        let state = StateInRegistry {
+            signature_variables: generate_signature_variables(vec![0, 1, 2]),
+            resource_variables: generate_resource_variables(vec![1, 2, 3]),
+        };
+        let make = |state, cost| MockInformation {
+            state,
+            cost,
+            value: Cell::new(None),
+        };
+        operation_timing::start(1);
+        assert!(registry.insert(make(state.clone(), 2)).information.is_some());
+        assert!(registry.insert(make(state.clone(), 3)).information.is_none());
+        let replacement =
+            registry.insert_with(state.clone(), 1, |state, cost, _| Some(make(state, cost)));
+        assert!(replacement.information.is_some());
+        assert_eq!(replacement.dominated.len(), 1);
+        assert!(registry
+            .insert_with(state.clone(), 1, |_, _, _| panic!("dominated constructor called"))
+            .information
+            .is_none());
+        let other_state = StateInRegistry {
+            signature_variables: generate_signature_variables(vec![1, 2, 3]),
+            ..state.clone()
+        };
+        assert!(registry
+            .insert_with(other_state, 0, |_, _, _| None)
+            .information
+            .is_none());
+        assert!(registry
+            .insert_with(state, 0, |_, _, _| None)
+            .information
+            .is_none());
+        let measurements = operation_timing::finish();
+        for (operation, expected) in [
+            (Operation::RegistryInsert, 2),
+            (Operation::RegistryInsertWith, 4),
+            (Operation::RegistryLookup, 6),
+            (Operation::DominanceScan, 4),
+            (Operation::DominanceCompare, 4),
+        ] {
+            let measurement = measurements[operation as usize];
+            assert_eq!(measurement.calls, expected, "{operation:?}");
+            assert_eq!(measurement.timed_calls, expected, "{operation:?}");
+        }
+    }
 
     impl PartialOrd for MockInformation {
         fn partial_cmp(&self, other: &Self) -> Option<Ordering> {

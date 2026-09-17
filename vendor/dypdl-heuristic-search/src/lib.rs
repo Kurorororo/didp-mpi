@@ -23,6 +23,8 @@ mod expression_beam_search;
 mod f_evaluator_type;
 pub mod parallel_search_algorithm;
 pub mod search_algorithm;
+#[cfg(feature = "operation-timing")]
+pub mod operation_timing;
 
 pub use caasdy::create_caasdy;
 pub use dual_bound_acps::create_dual_bound_acps;
