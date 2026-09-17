@@ -1,3 +1,5 @@
+#[cfg(feature = "operation-timing")]
+use dypdl_heuristic_search::operation_timing::{Operation, Timer};
 use mpi::{
     datatype::{DatatypeRef, MutView, UserDatatype, View},
     traits::*,
@@ -39,6 +41,8 @@ where
         buffer[offset..offset + mem::size_of::<usize>()].copy_from_slice(tstamp.as_bytes());
         let v = unsafe { View::with_count_and_datatype(buffer, 1, datatype) };
         let destination_process = self.communicator.process_at_rank(destination);
+        #[cfg(feature = "operation-timing")]
+        let _timer = Timer::start(Operation::NodeMpiSend, buffer.len());
         destination_process.buffered_send_with_tag(&v, tag);
     }
 
@@ -50,9 +54,15 @@ where
         tag: Tag,
         datatype: &UserDatatype,
     ) {
-        let mut v = unsafe { MutView::with_count_and_datatype(buffer, 1, datatype) };
-        let source_process = self.communicator.process_at_rank(source);
-        source_process.receive_into_with_tag(&mut v, tag);
+        {
+            #[cfg(feature = "operation-timing")]
+            let size = buffer.len();
+            let mut v = unsafe { MutView::with_count_and_datatype(buffer, 1, datatype) };
+            let source_process = self.communicator.process_at_rank(source);
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(Operation::NodeMpiReceive, size);
+            source_process.receive_into_with_tag(&mut v, tag);
+        }
         let tstamp =
             usize::read_from_bytes(&buffer[offset..offset + mem::size_of::<usize>()]).unwrap();
         self.termination_detector.notify_received(tstamp);

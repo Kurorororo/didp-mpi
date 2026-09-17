@@ -36,11 +36,61 @@ pub enum Operation {
     DominanceScan,
     /// One state-metadata dominance comparison, excluding cost comparison.
     DominanceCompare,
+    /// Complete HAC search call (always timed).
+    SearchTotal,
+    /// Periodic memory monitoring in the HAC loop.
+    PhaseMonitoring,
+    /// Drain incoming messages, including processing them.
+    PhaseMessages,
+    /// Timeout and termination checks before selecting work.
+    PhaseControl,
+    /// Select a node, including depth traversal and stale-node rejection.
+    PhaseSelection,
+    /// Expand one node, including expansion-statistics recording.
+    PhaseExpansion,
+    /// Send all remote successors of one expansion.
+    PhaseSending,
+    /// Enqueue all local successors of one expansion.
+    PhaseEnqueue,
+    /// Termination initiation after an unsuccessful selection.
+    PhaseNoWork,
+    /// Final HAC barrier.
+    PhaseBarrier,
+    /// Final solution/statistics collection and result bookkeeping.
+    PhaseFinalize,
+    /// Advance the applicable-transition iterator, including its final None.
+    TransitionNext,
+    /// Generate a successor state and its cost, including constraint checks.
+    SuccessorGeneration,
+    /// Check a successor for a goal and process any solution found.
+    GoalCheck,
+    /// Compute the successor's ownership hash.
+    OwnershipHash,
+    /// Local successor evaluator, including registry insertion.
+    LocalSuccessorEvaluation,
+    /// Remote successor evaluator, including message-node construction.
+    RemoteSuccessorEvaluation,
+    /// Evaluate the dual bound in the local successor path.
+    HeuristicLocal,
+    /// Evaluate the dual bound in the outgoing successor path.
+    HeuristicRemote,
+    /// Probe once for any incoming message, including unsuccessful probes.
+    MessageProbe,
+    /// Dispatch and process one incoming message of any tag.
+    MessageDispatch,
+    /// Serialize a node and its depth, excluding the timestamp and MPI call.
+    NodeSerialize,
+    /// Deserialize an accepted received node and its depth.
+    NodeDeserialize,
+    /// Buffered MPI send of a timestamped node message.
+    NodeMpiSend,
+    /// MPI receive of a timestamped node message.
+    NodeMpiReceive,
 }
 
 impl Operation {
     /// All operations, ordered by discriminant.
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 38] = [
         Self::HeapPrimaryPush,
         Self::HeapPrimaryPop,
         Self::HeapPrimaryEmptyPop,
@@ -54,6 +104,31 @@ impl Operation {
         Self::RegistryLookup,
         Self::DominanceScan,
         Self::DominanceCompare,
+        Self::SearchTotal,
+        Self::PhaseMonitoring,
+        Self::PhaseMessages,
+        Self::PhaseControl,
+        Self::PhaseSelection,
+        Self::PhaseExpansion,
+        Self::PhaseSending,
+        Self::PhaseEnqueue,
+        Self::PhaseNoWork,
+        Self::PhaseBarrier,
+        Self::PhaseFinalize,
+        Self::TransitionNext,
+        Self::SuccessorGeneration,
+        Self::GoalCheck,
+        Self::OwnershipHash,
+        Self::LocalSuccessorEvaluation,
+        Self::RemoteSuccessorEvaluation,
+        Self::HeuristicLocal,
+        Self::HeuristicRemote,
+        Self::MessageProbe,
+        Self::MessageDispatch,
+        Self::NodeSerialize,
+        Self::NodeDeserialize,
+        Self::NodeMpiSend,
+        Self::NodeMpiReceive,
     ];
 
     /// CSV operation name.
@@ -72,6 +147,70 @@ impl Operation {
             Self::RegistryLookup => "registry_lookup",
             Self::DominanceScan => "dominance_scan",
             Self::DominanceCompare => "dominance_compare",
+            Self::SearchTotal => "search_total",
+            Self::PhaseMonitoring => "monitoring",
+            Self::PhaseMessages => "message_handling",
+            Self::PhaseControl => "control",
+            Self::PhaseSelection => "node_selection",
+            Self::PhaseExpansion => "expansion",
+            Self::PhaseSending => "sending",
+            Self::PhaseEnqueue => "local_enqueue",
+            Self::PhaseNoWork => "no_work_control",
+            Self::PhaseBarrier => "final_barrier",
+            Self::PhaseFinalize => "finalize",
+            Self::TransitionNext => "transition_next",
+            Self::SuccessorGeneration => "successor_generation",
+            Self::GoalCheck => "goal_check",
+            Self::OwnershipHash => "ownership_hash",
+            Self::LocalSuccessorEvaluation => "local_successor_evaluation",
+            Self::RemoteSuccessorEvaluation => "remote_successor_evaluation",
+            Self::HeuristicLocal => "heuristic_local",
+            Self::HeuristicRemote => "heuristic_remote",
+            Self::MessageProbe => "message_probe",
+            Self::MessageDispatch => "message_dispatch",
+            Self::NodeSerialize => "node_serialize",
+            Self::NodeDeserialize => "node_deserialize",
+            Self::NodeMpiSend => "node_mpi_send",
+            Self::NodeMpiReceive => "node_mpi_receive",
+        }
+    }
+
+    /// Separate reports prevent mixing outer phases with their nested operations.
+    pub fn report(self) -> &'static str {
+        if (self as usize) < Self::SearchTotal as usize {
+            "operation_timing"
+        } else if (self as usize) < Self::TransitionNext as usize {
+            "search_phase_timing"
+        } else {
+            "search_detail_timing"
+        }
+    }
+
+    /// Whether this boundary contains other instrumented operations.
+    pub fn inclusive(self) -> bool {
+        matches!(
+            self,
+            Self::RegistryInsert
+                | Self::RegistryInsertWith
+                | Self::DominanceScan
+                | Self::SearchTotal
+                | Self::PhaseMessages
+                | Self::PhaseSelection
+                | Self::PhaseExpansion
+                | Self::PhaseSending
+                | Self::PhaseEnqueue
+                | Self::LocalSuccessorEvaluation
+                | Self::RemoteSuccessorEvaluation
+                | Self::MessageDispatch
+        )
+    }
+
+    /// The search-window reference is always measured in full.
+    pub fn sample_interval(self, configured: u64) -> u64 {
+        if self == Self::SearchTotal {
+            1
+        } else {
+            configured
         }
     }
 }
@@ -162,7 +301,8 @@ impl Timer {
                 return false;
             };
             let measurement = &mut recorder.measurements[operation as usize];
-            let sampled = measurement.calls % recorder.sample_interval == 0;
+            let sampled =
+                measurement.calls % operation.sample_interval(recorder.sample_interval) == 0;
             measurement.calls += 1;
             measurement.size_sum += size as u64;
             measurement.max_size = measurement.max_size.max(size as u64);
@@ -240,6 +380,40 @@ mod tests {
     #[test]
     fn empty_estimate_is_zero() {
         assert_eq!(Measurement::default().estimated_ns(), 0.0);
+    }
+
+    #[test]
+    fn operation_metadata_and_search_reference() {
+        let mut names = std::collections::HashSet::new();
+        for (index, operation) in Operation::ALL.into_iter().enumerate() {
+            assert_eq!(operation as usize, index);
+            assert!(names.insert(operation.name()));
+        }
+        assert_eq!(
+            Operation::ALL
+                .iter()
+                .filter(|op| op.report() == "operation_timing")
+                .count(),
+            13
+        );
+        assert_eq!(
+            Operation::ALL
+                .iter()
+                .filter(|op| op.report() == "search_phase_timing")
+                .count(),
+            11
+        );
+        start(100);
+        for _ in 0..3 {
+            let _search = Timer::start(Operation::SearchTotal, 1);
+            let _phase = Timer::start(Operation::PhaseExpansion, 1);
+        }
+        let measurements = finish();
+        assert_eq!(measurements[Operation::SearchTotal as usize].timed_calls, 3);
+        assert_eq!(
+            measurements[Operation::PhaseExpansion as usize].timed_calls,
+            1
+        );
     }
 
     #[test]

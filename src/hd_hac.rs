@@ -1,5 +1,7 @@
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{prelude::*, variable_type::Numeric};
+#[cfg(feature = "operation-timing")]
+use dypdl_heuristic_search::operation_timing::{Operation, Timer};
 use dypdl_heuristic_search::search_algorithm::{
     data_structure::{HashableSignatureVariables, StateWithHashableSignatureVariables},
     SearchInput, Solution, StateInRegistry, StateRegistry, TransitionWithId,
@@ -702,7 +704,13 @@ where
     fn process_message(&mut self) {
         let any_process = self.communicator.any_process();
 
-        while let Some(status) = any_process.immediate_probe() {
+        while let Some(status) = {
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(Operation::MessageProbe, 1);
+            any_process.immediate_probe()
+        } {
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(Operation::MessageDispatch, 1);
             let source_rank = status.source_rank();
             let tag = status.tag();
 
@@ -789,26 +797,100 @@ where
     }
 
     pub fn search(&mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
+        #[cfg(feature = "operation-timing")]
+        let _search_timer = Timer::start(Operation::SearchTotal, 1);
         let mut keep_buffer = vec![];
         let mut send_buffer = vec![];
 
         loop {
-            self.record_memory_statistics_if_due();
-            self.process_message();
-
-            if self.is_terminated {
-                break;
+            {
+                #[cfg(feature = "operation-timing")]
+                let _timer = Timer::start(Operation::PhaseMonitoring, 1);
+                self.record_memory_statistics_if_due();
+            }
+            {
+                #[cfg(feature = "operation-timing")]
+                let _timer = Timer::start(Operation::PhaseMessages, 1);
+                self.process_message();
             }
 
-            if self.communicator.rank() == self.search.get_root_rank() {
-                if !self.is_time_out && self.search.check_time_limit() {
-                    self.is_time_out = true;
-                    self.local_dual_bound = self.compute_local_dual_bound();
-                    self.broadcast_time_out();
+            {
+                #[cfg(feature = "operation-timing")]
+                let _timer = Timer::start(Operation::PhaseControl, 1);
+                if self.is_terminated {
+                    break;
                 }
 
-                if self.is_time_out
-                    && self.n_remaining_time_out_ack == 0
+                if self.communicator.rank() == self.search.get_root_rank() {
+                    if !self.is_time_out && self.search.check_time_limit() {
+                        self.is_time_out = true;
+                        self.local_dual_bound = self.compute_local_dual_bound();
+                        self.broadcast_time_out();
+                    }
+
+                    if self.is_time_out
+                        && self.n_remaining_time_out_ack == 0
+                        && !self.is_checking_termination
+                    {
+                        self.is_checking_termination = true;
+                        let destination_rank =
+                            (self.communicator.rank() + 1) % self.communicator.size();
+                        self.node_communicator
+                            .initiate_termination(destination_rank);
+                    }
+                }
+
+                if self.is_time_out {
+                    continue;
+                }
+            }
+
+            let next = {
+                #[cfg(feature = "operation-timing")]
+                let _timer = Timer::start(Operation::PhaseSelection, self.open.len());
+                self.pop_node_and_depth()
+            };
+            if let Some((node, depth)) = next {
+                {
+                    #[cfg(feature = "operation-timing")]
+                    let _timer = Timer::start(Operation::PhaseExpansion, 1);
+                    if let Some(statistics) = self.expansion_statistics.as_mut() {
+                        statistics.record(depth, node.bound(&self.model), node.cost(&self.model));
+                    }
+                    self.search.expand(
+                        node,
+                        &mut self.registry,
+                        &mut keep_buffer,
+                        &mut send_buffer,
+                    );
+                }
+
+                {
+                    #[cfg(feature = "operation-timing")]
+                    let _timer = Timer::start(Operation::PhaseSending, send_buffer.len());
+                    for (destination_rank, successor) in send_buffer.drain(..) {
+                        self.node_communicator
+                            .send(destination_rank, &successor, depth + 1);
+                    }
+                }
+
+                {
+                    #[cfg(feature = "operation-timing")]
+                    let _timer = Timer::start(Operation::PhaseEnqueue, keep_buffer.len());
+                    for successor in keep_buffer.drain(..) {
+                        open_list::push_primary(&mut self.open, (successor.clone(), depth + 1));
+
+                        while depth + 1 >= self.layered_open.len() {
+                            self.layered_open.push(BinaryHeap::new());
+                        }
+
+                        open_list::push_layered(&mut self.layered_open[depth + 1], successor);
+                    }
+                }
+            } else {
+                #[cfg(feature = "operation-timing")]
+                let _timer = Timer::start(Operation::PhaseNoWork, 1);
+                if self.communicator.rank() == self.search.get_root_rank()
                     && !self.is_checking_termination
                 {
                     self.is_checking_termination = true;
@@ -818,44 +900,16 @@ where
                         .initiate_termination(destination_rank);
                 }
             }
-
-            if self.is_time_out {
-                continue;
-            }
-
-            if let Some((node, depth)) = self.pop_node_and_depth() {
-                if let Some(statistics) = self.expansion_statistics.as_mut() {
-                    statistics.record(depth, node.bound(&self.model), node.cost(&self.model));
-                }
-                self.search
-                    .expand(node, &mut self.registry, &mut keep_buffer, &mut send_buffer);
-
-                for (destination_rank, successor) in send_buffer.drain(..) {
-                    self.node_communicator
-                        .send(destination_rank, &successor, depth + 1);
-                }
-
-                for successor in keep_buffer.drain(..) {
-                    open_list::push_primary(&mut self.open, (successor.clone(), depth + 1));
-
-                    while depth + 1 >= self.layered_open.len() {
-                        self.layered_open.push(BinaryHeap::new());
-                    }
-
-                    open_list::push_layered(&mut self.layered_open[depth + 1], successor);
-                }
-            } else if self.communicator.rank() == self.search.get_root_rank()
-                && !self.is_checking_termination
-            {
-                self.is_checking_termination = true;
-                let destination_rank = (self.communicator.rank() + 1) % self.communicator.size();
-                self.node_communicator
-                    .initiate_termination(destination_rank);
-            }
         }
 
-        self.communicator.barrier();
+        {
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(Operation::PhaseBarrier, 1);
+            self.communicator.barrier();
+        }
 
+        #[cfg(feature = "operation-timing")]
+        let _finalize_timer = Timer::start(Operation::PhaseFinalize, 1);
         let (mut solution, statistics) = self.search.finalize(self.local_dual_bound);
 
         if self.is_time_out {

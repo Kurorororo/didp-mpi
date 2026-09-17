@@ -54,6 +54,11 @@ mod reporting {
 
     const FIELDS: usize = 6;
     const PACKED_LEN: usize = FIELDS * Operation::ALL.len();
+    const REPORTS: [&str; 3] = [
+        "operation_timing",
+        "search_phase_timing",
+        "search_detail_timing",
+    ];
 
     fn pack(measurements: &Measurements) -> [u64; PACKED_LEN] {
         let mut buffer = [0; PACKED_LEN];
@@ -110,9 +115,14 @@ mod reporting {
         rank: &str,
         measurements: &[ReportMeasurement; Operation::ALL.len()],
         sample_interval: u64,
+        report: &str,
     ) -> io::Result<()> {
-        writeln!(writer, "rank,operation,inclusive,calls,timed_calls,sampled_ns,estimated_total_ns,mean_ns,size_sum,mean_size,max_size,zero_size_calls,sample_interval")?;
+        let expansions = measurements[Operation::PhaseExpansion as usize].raw.calls;
+        writeln!(writer, "rank,operation,inclusive,calls,timed_calls,sampled_ns,estimated_total_ns,mean_ns,size_sum,mean_size,max_size,zero_size_calls,sample_interval,expansions,calls_per_expansion,ns_per_expansion")?;
         for (operation, measurement) in Operation::ALL.iter().zip(measurements) {
+            if operation.report() != report {
+                continue;
+            }
             let raw = measurement.raw;
             let mean_ns = (raw.calls > 0)
                 .then(|| format!("{:.3}", measurement.estimated_total_ns / raw.calls as f64))
@@ -120,18 +130,12 @@ mod reporting {
             let mean_size = (raw.calls > 0)
                 .then(|| format!("{:.3}", raw.size_sum as f64 / raw.calls as f64))
                 .unwrap_or_default();
-            let inclusive = matches!(
-                operation,
-                Operation::RegistryInsert
-                    | Operation::RegistryInsertWith
-                    | Operation::DominanceScan
-            );
             writeln!(
                 writer,
-                "{},{},{},{},{},{},{:.3},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{:.3},{},{},{},{},{},{},{},{},{}",
                 rank,
                 operation.name(),
-                inclusive,
+                operation.inclusive(),
                 raw.calls,
                 raw.timed_calls,
                 raw.sampled_ns,
@@ -141,7 +145,68 @@ mod reporting {
                 mean_size,
                 raw.max_size,
                 raw.zero_size_calls,
-                sample_interval
+                operation.sample_interval(sample_interval),
+                expansions,
+                per_expansion(raw.calls as f64, expansions),
+                per_expansion(measurement.estimated_total_ns, expansions),
+            )?;
+        }
+        Ok(())
+    }
+
+    fn per_expansion(value: f64, expansions: u64) -> String {
+        (expansions > 0)
+            .then(|| format!("{:.6}", value / expansions as f64))
+            .unwrap_or_default()
+    }
+
+    // Median uses the middle pair for even rank counts; p95 is nearest-rank.
+    fn rank_distribution(mut values: Vec<f64>) -> [f64; 4] {
+        assert!(!values.is_empty());
+        values.sort_by(f64::total_cmp);
+        let n = values.len();
+        [
+            values[0],
+            (values[(n - 1) / 2] + values[n / 2]) / 2.0,
+            values[(95 * n).div_ceil(100) - 1],
+            values[n - 1],
+        ]
+    }
+
+    fn write_rank_summary<W: Write>(
+        writer: &mut W,
+        ranks: &[Measurements],
+        aggregate: &[ReportMeasurement; Operation::ALL.len()],
+    ) -> io::Result<()> {
+        writeln!(writer, "report,operation,inclusive,ranks,active_ranks,expansions,calls,estimated_total_ns,calls_per_expansion,ns_per_expansion,rank_min_ns,rank_median_ns,rank_p95_ns,rank_max_ns")?;
+        let expansions = aggregate[Operation::PhaseExpansion as usize].raw.calls;
+        for operation in Operation::ALL {
+            let index = operation as usize;
+            let total = aggregate[index];
+            let active_ranks = ranks.iter().filter(|rank| rank[index].calls > 0).count();
+            let [min, median, p95, max] = rank_distribution(
+                ranks
+                    .iter()
+                    .map(|rank| rank[index].estimated_ns())
+                    .collect(),
+            );
+            writeln!(
+                writer,
+                "{},{},{},{},{},{},{},{:.3},{},{},{:.3},{:.3},{:.3},{:.3}",
+                operation.report(),
+                operation.name(),
+                operation.inclusive(),
+                ranks.len(),
+                active_ranks,
+                expansions,
+                total.raw.calls,
+                total.estimated_total_ns,
+                per_expansion(total.raw.calls as f64, expansions),
+                per_expansion(total.estimated_total_ns, expansions),
+                min,
+                median,
+                p95,
+                max
             )?;
         }
         Ok(())
@@ -163,22 +228,30 @@ mod reporting {
         let mut received = vec![0u64; PACKED_LEN * communicator.size() as usize];
         root.gather_into_root(&local[..], &mut received[..]);
         let mut aggregate = [ReportMeasurement::default(); Operation::ALL.len()];
-        for (rank, buffer) in received.chunks_exact(PACKED_LEN).enumerate() {
-            let measurements = unpack(buffer);
+        let ranks: Vec<_> = received.chunks_exact(PACKED_LEN).map(unpack).collect();
+        for (rank, measurements) in ranks.iter().enumerate() {
             let mut report = [ReportMeasurement::default(); Operation::ALL.len()];
-            for ((local, total), measurement) in
-                report.iter_mut().zip(&mut aggregate).zip(measurements)
+            for ((local, total), measurement) in report
+                .iter_mut()
+                .zip(&mut aggregate)
+                .zip(measurements.iter().copied())
             {
                 local.add(measurement);
                 total.add(measurement);
             }
-            let mut file =
-                BufWriter::new(File::create(format!("operation_timing_rank_{rank}.csv"))?);
-            write_csv(&mut file, &rank.to_string(), &report, sample_interval)?;
+            for name in REPORTS {
+                let mut file = BufWriter::new(File::create(format!("{name}_rank_{rank}.csv"))?);
+                write_csv(&mut file, &rank.to_string(), &report, sample_interval, name)?;
+                file.flush()?;
+            }
+        }
+        for name in REPORTS {
+            let mut file = BufWriter::new(File::create(format!("{name}.csv"))?);
+            write_csv(&mut file, "all", &aggregate, sample_interval, name)?;
             file.flush()?;
         }
-        let mut file = BufWriter::new(File::create("operation_timing.csv")?);
-        write_csv(&mut file, "all", &aggregate, sample_interval)?;
+        let mut file = BufWriter::new(File::create("timing_rank_summary.csv")?);
+        write_rank_summary(&mut file, &ranks, &aggregate)?;
         file.flush()
     }
 
@@ -228,10 +301,65 @@ mod reporting {
         fn csv_includes_zero_call_operations_without_nan() {
             let report = [ReportMeasurement::default(); Operation::ALL.len()];
             let mut bytes = vec![];
-            write_csv(&mut bytes, "all", &report, 1).unwrap();
+            write_csv(&mut bytes, "all", &report, 1, "operation_timing").unwrap();
+            let csv = String::from_utf8(bytes).unwrap();
+            assert_eq!(csv.lines().count(), 14);
+            assert!(csv.contains("all,heap_primary_push,false,0,0,0,0.000,,0,,0,0,1"));
+            assert!(!csv.contains("NaN"));
+        }
+
+        #[test]
+        fn phase_report_and_normalization() {
+            let mut report = [ReportMeasurement::default(); Operation::ALL.len()];
+            report[Operation::PhaseExpansion as usize].add(Measurement {
+                calls: 4,
+                timed_calls: 1,
+                sampled_ns: 20,
+                ..Default::default()
+            });
+            report[Operation::SearchTotal as usize].add(Measurement {
+                calls: 1,
+                timed_calls: 1,
+                sampled_ns: 300,
+                ..Default::default()
+            });
+            let mut bytes = vec![];
+            write_csv(&mut bytes, "0", &report, 100, "search_phase_timing").unwrap();
+            let csv = String::from_utf8(bytes).unwrap();
+            assert_eq!(csv.lines().count(), 12);
+            assert!(!csv.contains("registry_insert"));
+            assert!(csv
+                .lines()
+                .find(|line| line.starts_with("0,search_total,"))
+                .unwrap()
+                .ends_with(",1,4,0.250000,75.000000"));
+            assert!(csv
+                .lines()
+                .find(|line| line.starts_with("0,expansion,"))
+                .unwrap()
+                .ends_with(",100,4,1.000000,20.000000"));
+        }
+
+        #[test]
+        fn rank_summary_includes_inactive_ranks_and_handles_zero_expansions() {
+            assert_eq!(
+                rank_distribution(vec![100.0, 0.0, 30.0, 10.0]),
+                [0.0, 20.0, 100.0, 100.0]
+            );
+            assert_eq!(rank_distribution(vec![7.0]), [7.0; 4]);
+            assert_eq!(
+                rank_distribution((1..=20).map(f64::from).collect()),
+                [1.0, 10.5, 19.0, 20.0]
+            );
+            let ranks = [[Measurement::default(); Operation::ALL.len()]; 2];
+            let totals = [ReportMeasurement::default(); Operation::ALL.len()];
+            let mut bytes = vec![];
+            write_rank_summary(&mut bytes, &ranks, &totals).unwrap();
             let csv = String::from_utf8(bytes).unwrap();
             assert_eq!(csv.lines().count(), Operation::ALL.len() + 1);
-            assert!(csv.contains("all,heap_primary_push,false,0,0,0,0.000,,0,,0,0,1"));
+            assert!(csv.contains(
+                "operation_timing,heap_primary_push,false,2,0,0,0,0.000,,,0.000,0.000,0.000,0.000"
+            ));
             assert!(!csv.contains("NaN"));
         }
     }

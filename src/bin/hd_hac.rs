@@ -239,10 +239,16 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     #[cfg(feature = "operation-timing")]
     if operation_timing.enabled {
-        didp_mpi::operation_timing::finish_and_dump(&communicator, operation_timing.sample_interval)
-            .expect("failed to write operation timing CSVs");
+        didp_mpi::operation_timing::finish_and_dump(
+            &communicator,
+            operation_timing.sample_interval,
+        )
+        .expect("failed to write operation timing CSVs");
         if communicator.rank() == 0 {
-            println!("Operation timings: operation_timing.csv and operation_timing_rank_<rank>.csv");
+            println!(
+                "Operation timings: operation_timing.csv and operation_timing_rank_<rank>.csv"
+            );
+            println!("Search timings: search_phase_timing*.csv, search_detail_timing*.csv, and timing_rank_summary.csv");
         }
     }
 

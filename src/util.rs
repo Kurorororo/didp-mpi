@@ -6,6 +6,8 @@ use crate::{
     mpi_anytime_search::MpiAnytimeSearchEvaluators,
 };
 use dypdl::{prelude::*, variable_type::Numeric};
+#[cfg(feature = "operation-timing")]
+use dypdl_heuristic_search::operation_timing::{Operation, Timer};
 use dypdl_heuristic_search::search_algorithm::{
     data_structure::StateWithHashableSignatureVariables, FNode, SearchInput, StateInRegistry,
     StateRegistry, SuccessorGenerator, TransitionWithId,
@@ -132,11 +134,19 @@ where
 {
     let base_cost_evaluator = move |cost, base_cost| f_evaluator_type.eval(cost, base_cost);
     let h_model = model.clone();
-    let remote_h_evaluator = move |state: &_| h_model.eval_dual_bound(state);
+    let remote_h_evaluator = move |state: &_| {
+        #[cfg(feature = "operation-timing")]
+        let _timer = Timer::start(Operation::HeuristicRemote, 1);
+        h_model.eval_dual_bound(state)
+    };
     let remote_f_evaluator = move |g, h, _: &_| f_evaluator_type.eval(g, h);
 
     let h_model = model.clone();
-    let local_h_evaluator = move |state: &_| h_model.eval_dual_bound(state);
+    let local_h_evaluator = move |state: &_| {
+        #[cfg(feature = "operation-timing")]
+        let _timer = Timer::start(Operation::HeuristicLocal, 1);
+        h_model.eval_dual_bound(state)
+    };
     let local_f_evaluator = move |g, h, _: &_| f_evaluator_type.eval(g, h);
     let local_successor_evaluator =
         move |state, cost, transition: &_, chain: &_, registry: &mut _, primal_bound| {

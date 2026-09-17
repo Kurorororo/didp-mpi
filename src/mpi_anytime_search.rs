@@ -1,5 +1,7 @@
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::{prelude::*, variable_type::Numeric};
+#[cfg(feature = "operation-timing")]
+use dypdl_heuristic_search::operation_timing::{Operation, Timer};
 use dypdl_heuristic_search::{
     search_algorithm::{
         self,
@@ -1222,20 +1224,34 @@ where
 
         let model = &self.generator.model;
 
-        for transition in self.generator.applicable_transitions(node.state()) {
-            if let Some((successor_state, g)) = model.generate_successor_state(
-                node.state(),
-                node.cost(model),
-                transition.as_ref(),
-                None,
-            ) {
-                let (is_goal, is_better_goal) = self.solution_manager.check_solution(
-                    &successor_state,
-                    g,
-                    Some(&transition),
-                    node.get_distributed_transition_id_chain(),
-                    &self.id_to_chain_node,
-                );
+        let mut transitions = self.generator.applicable_transitions(node.state());
+        while let Some(transition) = {
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(Operation::TransitionNext, 1);
+            transitions.next()
+        } {
+            let successor = {
+                #[cfg(feature = "operation-timing")]
+                let _timer = Timer::start(Operation::SuccessorGeneration, 1);
+                model.generate_successor_state(
+                    node.state(),
+                    node.cost(model),
+                    transition.as_ref(),
+                    None,
+                )
+            };
+            if let Some((successor_state, g)) = successor {
+                let (is_goal, is_better_goal) = {
+                    #[cfg(feature = "operation-timing")]
+                    let _timer = Timer::start(Operation::GoalCheck, 1);
+                    self.solution_manager.check_solution(
+                        &successor_state,
+                        g,
+                        Some(&transition),
+                        node.get_distributed_transition_id_chain(),
+                        &self.id_to_chain_node,
+                    )
+                };
 
                 if is_better_goal && !better_goal_found {
                     better_goal_found = true;
@@ -1245,19 +1261,27 @@ where
                     continue;
                 }
 
-                let hash_value = (self.hash_function)(&successor_state.signature_variables);
+                let hash_value = {
+                    #[cfg(feature = "operation-timing")]
+                    let _timer = Timer::start(Operation::OwnershipHash, 1);
+                    (self.hash_function)(&successor_state.signature_variables)
+                };
                 let destination_rank = (hash_value % n_ranks) as Rank;
 
                 if destination_rank == this_rank {
-                    let successor_state = StateInRegistry::from(successor_state);
-                    let result = (self.local_successor_evaluator)(
-                        successor_state,
-                        g,
-                        &transition,
-                        node.get_distributed_transition_id_chain(),
-                        registry,
-                        self.solution_manager.get_primal_bound(),
-                    );
+                    let result = {
+                        #[cfg(feature = "operation-timing")]
+                        let _timer = Timer::start(Operation::LocalSuccessorEvaluation, 1);
+                        let successor_state = StateInRegistry::from(successor_state);
+                        (self.local_successor_evaluator)(
+                            successor_state,
+                            g,
+                            &transition,
+                            node.get_distributed_transition_id_chain(),
+                            registry,
+                            self.solution_manager.get_primal_bound(),
+                        )
+                    };
                     #[cfg(feature = "memory-statistics")]
                     if let (Some(counter), Some(node)) = (&self.node_memory_counter, &result.node) {
                         node.track_memory(counter);
@@ -1291,13 +1315,17 @@ where
                             no_successor = false;
                         }
                     }
-                } else if let Some(successor) = (self.remote_successor_evaluator)(
-                    successor_state,
-                    g,
-                    &transition,
-                    node.get_distributed_transition_id_chain(),
-                    self.solution_manager.get_primal_bound(),
-                ) {
+                } else if let Some(successor) = {
+                    #[cfg(feature = "operation-timing")]
+                    let _timer = Timer::start(Operation::RemoteSuccessorEvaluation, 1);
+                    (self.remote_successor_evaluator)(
+                        successor_state,
+                        g,
+                        &transition,
+                        node.get_distributed_transition_id_chain(),
+                        self.solution_manager.get_primal_bound(),
+                    )
+                } {
                     successor.set_parent_rank(this_rank);
                     send_buffer.push((destination_rank, successor));
                     self.solution_manager.increment_sent();

@@ -1,4 +1,6 @@
 use dypdl::{prelude::*, variable_type::Numeric};
+#[cfg(feature = "operation-timing")]
+use dypdl_heuristic_search::operation_timing::{Operation, Timer};
 use dypdl_heuristic_search::search_algorithm::data_structure;
 use mpi::{
     datatype::{MutView, UserDatatype, View},
@@ -244,9 +246,16 @@ where
     where
         N: NodeDatatype<T, S = M>,
     {
-        node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
-        self.tmp_buffer[self.offset..self.offset + mem::size_of::<usize>()]
-            .copy_from_slice(depth.as_bytes());
+        {
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(
+                Operation::NodeSerialize,
+                self.offset + mem::size_of::<usize>(),
+            );
+            node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
+            self.tmp_buffer[self.offset..self.offset + mem::size_of::<usize>()]
+                .copy_from_slice(depth.as_bytes());
+        }
 
         self.communicator
             .send(&mut self.tmp_buffer, destination_rank);
@@ -269,6 +278,8 @@ where
             }
         }
 
+        #[cfg(feature = "operation-timing")]
+        let _timer = Timer::start(Operation::NodeDeserialize, self.tmp_buffer.len());
         let node = M::deserialize(&self.state_serializer, &self.tmp_buffer);
         let depth = self.get_depth();
 
