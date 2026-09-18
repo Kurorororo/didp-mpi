@@ -23,6 +23,8 @@ pub struct NodeCommunicator<'a, C, M, T> {
     tag: Tag,
     state_serializer: StateSerializer,
     user_datatype: UserDatatype,
+    #[cfg(feature = "operation-timing")]
+    payload_bytes: u64,
     tmp_buffer: Vec<u8>,
     _phantom: PhantomData<(M, T)>,
 }
@@ -37,6 +39,12 @@ where
         let state_serializer = StateSerializer::with_model(&model);
         let user_datatype = M::create_data_type(&state_serializer);
         let tmp_buffer = vec![0; M::get_total_size(&state_serializer)];
+        #[cfg(feature = "operation-timing")]
+        let payload_bytes = if crate::communication_statistics::enabled() {
+            crate::communication_statistics::datatype_bytes(&user_datatype)
+        } else {
+            0
+        };
 
         Self {
             model,
@@ -44,6 +52,8 @@ where
             tag,
             state_serializer,
             user_datatype,
+            #[cfg(feature = "operation-timing")]
+            payload_bytes,
             tmp_buffer,
             _phantom: PhantomData,
         }
@@ -56,7 +66,11 @@ where
         node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
         let destination = self.communicator.process_at_rank(destination_rank);
         let v = unsafe { View::with_count_and_datatype(&self.tmp_buffer, 1, &self.user_datatype) };
-        crate::timed_mpi!(MpiBsend, destination.buffered_send_with_tag(&v, self.tag));
+        crate::timed_mpi!(
+            MpiBsend,
+            destination.buffered_send_with_tag(&v, self.tag),
+            payload_bytes = self.payload_bytes
+        );
     }
 
     pub fn receive(&mut self, source_rank: Rank, primal_bound: Option<T>) -> Option<M> {

@@ -6,7 +6,42 @@ use yaml_rust::Yaml;
 /// Time one MPI API call. The non-instrumented build evaluates only the call.
 #[macro_export]
 macro_rules! timed_mpi {
+    (MpiBsend, $destination:ident.buffered_send_with_tag($buffer:expr, $tag:expr $(,)?)) => {{
+        let mpi_buffer = $buffer;
+        #[cfg(feature = "operation-timing")]
+        $crate::communication_statistics::record_buffer(
+            $crate::communication_statistics::SendKind::Buffered,
+            $destination.destination_rank(), mpi_buffer,
+        );
+        $crate::timed_mpi!(@call MpiBsend, $destination.buffered_send_with_tag(mpi_buffer, $tag))
+    }};
+    (MpiSend, $destination:ident.send_with_tag($buffer:expr, $tag:expr $(,)?)) => {{
+        let mpi_buffer = $buffer;
+        #[cfg(feature = "operation-timing")]
+        $crate::communication_statistics::record_buffer(
+            $crate::communication_statistics::SendKind::Standard,
+            $destination.destination_rank(), mpi_buffer,
+        );
+        $crate::timed_mpi!(@call MpiSend, $destination.send_with_tag(mpi_buffer, $tag))
+    }};
+    (MpiBsend, $destination:ident.buffered_send_with_tag($buffer:expr, $tag:expr $(,)?), payload_bytes = $bytes:expr) => {{
+        #[cfg(feature = "operation-timing")]
+        $crate::communication_statistics::record_bytes(
+            $crate::communication_statistics::SendKind::Buffered,
+            $destination.destination_rank(), $bytes,
+        );
+        $crate::timed_mpi!(@call MpiBsend, $destination.buffered_send_with_tag($buffer, $tag))
+    }};
+    (MpiBsend, $call:expr) => {
+        compile_error!("buffered sends must expose destination and buffer for communication accounting")
+    };
+    (MpiSend, $call:expr) => {
+        compile_error!("standard sends must expose destination and buffer for communication accounting")
+    };
     ($operation:ident, $call:expr) => {{
+        $crate::timed_mpi!(@call $operation, $call)
+    }};
+    (@call $operation:ident, $call:expr) => {{
         #[cfg(feature = "operation-timing")]
         let _mpi_timer = dypdl_heuristic_search::operation_timing::Timer::start(
             dypdl_heuristic_search::operation_timing::Operation::$operation,
@@ -101,6 +136,7 @@ pub use reporting::finish_and_dump;
 
 #[cfg(feature = "operation-timing")]
 mod reporting {
+    use crate::communication_statistics::{self, Report as CommunicationReport};
     use dypdl_heuristic_search::operation_timing::{self, Operation, Recording};
     use mpi::traits::*;
     use std::fs::File;
@@ -109,6 +145,7 @@ mod reporting {
     // Three exact counters and a corrected estimate (IEEE bits; NaN = unavailable).
     const FIELDS: usize = 4;
     const PACKED_LEN: usize = FIELDS * Operation::ALL.len();
+    const COMBINED_LEN: usize = PACKED_LEN + CommunicationReport::PACKED_LEN;
     type Report = [Row; Operation::ALL.len()];
 
     #[derive(Clone, Copy, Default)]
@@ -168,6 +205,7 @@ mod reporting {
         report: &Report,
         level: u8,
         interval: u64,
+        communication: &CommunicationReport,
     ) -> io::Result<()> {
         for operation in Operation::ALL.into_iter().filter(|op| op.at_level(level)) {
             let row = report[operation as usize];
@@ -183,7 +221,7 @@ mod reporting {
             };
             writeln!(
                 writer,
-                "{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{},{},{},{}",
                 rank,
                 operation.name(),
                 row.calls,
@@ -200,7 +238,28 @@ mod reporting {
                 } else {
                     interval
                 },
-                accounting
+                accounting,
+                if rank == "all" {
+                    String::new()
+                } else {
+                    communication.node_leader.to_string()
+                },
+                if rank == "all" {
+                    String::new()
+                } else {
+                    communication.ranks_on_node.to_string()
+                },
+                match operation {
+                    Operation::MpiBsend | Operation::MpiSend => {
+                        let i = usize::from(operation == Operation::MpiSend);
+                        communication.counts[i]
+                            .iter()
+                            .map(u64::to_string)
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    }
+                    _ => ",,,".into(),
+                }
             )?;
         }
         Ok(())
@@ -210,19 +269,32 @@ mod reporting {
     /// followed by their aggregate. No report collection is included in timing.
     pub fn finish_and_dump<C: Communicator>(communicator: &C) -> io::Result<()> {
         let recording = operation_timing::finish_recording();
-        let local = pack(&recording);
+        let communication = communication_statistics::finish();
+        for (i, op) in [Operation::MpiBsend, Operation::MpiSend].iter().enumerate() {
+            assert_eq!(
+                recording.measurements[*op as usize].calls,
+                communication.counts[i][0] + communication.counts[i][2],
+                "point-to-point send was not classified"
+            );
+        }
+        let mut local = [0; COMBINED_LEN];
+        local[..PACKED_LEN].copy_from_slice(&pack(&recording));
+        local[PACKED_LEN..].copy_from_slice(&communication.pack());
         let root = communicator.process_at_rank(0);
         if communicator.rank() != 0 {
             root.gather_into(&local[..]);
             return Ok(());
         }
-        let mut gathered = vec![0; PACKED_LEN * communicator.size() as usize];
+        let mut gathered = vec![0; COMBINED_LEN * communicator.size() as usize];
         root.gather_into_root(&local[..], &mut gathered[..]);
         let mut total = [Row::default(); Operation::ALL.len()];
+        let mut communication_total = CommunicationReport::default();
         let mut file = BufWriter::new(File::create("timing.csv")?);
-        writeln!(file, "rank,operation,calls,timed_calls,sampled_ns,estimated_total_ns,mean_ns,sample_interval,accounting")?;
-        for (rank, packed) in gathered.chunks_exact(PACKED_LEN).enumerate() {
-            let report = unpack(packed);
+        writeln!(file, "rank,operation,calls,timed_calls,sampled_ns,estimated_total_ns,mean_ns,sample_interval,accounting,node_leader_rank,ranks_on_node,intra_node_messages,intra_node_payload_bytes,inter_node_messages,inter_node_payload_bytes")?;
+        for (rank, packed) in gathered.chunks_exact(COMBINED_LEN).enumerate() {
+            let report = unpack(&packed[..PACKED_LEN]);
+            let communication = CommunicationReport::unpack(&packed[PACKED_LEN..]);
+            communication_total.add(&communication);
             for (total, row) in total.iter_mut().zip(&report) {
                 total.add(*row);
             }
@@ -232,6 +304,7 @@ mod reporting {
                 &report,
                 recording.level,
                 recording.sample_interval,
+                &communication,
             )?;
         }
         write_rows(
@@ -240,6 +313,7 @@ mod reporting {
             &total,
             recording.level,
             recording.sample_interval,
+            &communication_total,
         )?;
         file.flush()
     }
@@ -308,11 +382,27 @@ mod reporting {
                 ..Default::default()
             };
             let mut bytes = vec![];
-            write_rows(&mut bytes, "0", &report, 1, 100).unwrap();
-            write_rows(&mut bytes, "all", &report, 1, 100).unwrap();
+            write_rows(
+                &mut bytes,
+                "0",
+                &report,
+                1,
+                100,
+                &CommunicationReport::default(),
+            )
+            .unwrap();
+            write_rows(
+                &mut bytes,
+                "all",
+                &report,
+                1,
+                100,
+                &CommunicationReport::default(),
+            )
+            .unwrap();
             let csv = String::from_utf8(bytes).unwrap();
             assert_eq!(csv.lines().count(), 18);
-            assert!(csv.lines().all(|line| line.split(',').count() == 9));
+            assert!(csv.lines().all(|line| line.split(',').count() == 15));
             assert!(!csv.contains("NaN"));
             assert!(csv.contains("0,non_mpi_search,1,1,10,-30.000,-30.000,1,estimated"));
             assert!(csv.contains("all,MPI_Iprobe_hit,2,0,0,,,100,unavailable"));

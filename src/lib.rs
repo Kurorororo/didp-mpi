@@ -1,4 +1,6 @@
 mod bfs_node_with_distributed_id_chain;
+#[cfg(feature = "operation-timing")]
+pub mod communication_statistics;
 mod distributed_f_node;
 mod distributed_f_node_message;
 mod distributed_id_chain;

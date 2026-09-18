@@ -11,6 +11,8 @@ use crate::mpi_termination_detector::MpiTerminationDetector;
 pub struct TimestampedUserCommunicator<'a, C> {
     communicator: &'a C,
     termination_detector: MpiTerminationDetector<'a, C>,
+    #[cfg(feature = "operation-timing")]
+    payload_bytes: u64,
 }
 
 impl<'a, C> TimestampedUserCommunicator<'a, C>
@@ -24,6 +26,8 @@ where
         Self {
             communicator,
             termination_detector,
+            #[cfg(feature = "operation-timing")]
+            payload_bytes: 0,
         }
     }
 
@@ -41,7 +45,8 @@ where
         let destination_process = self.communicator.process_at_rank(destination);
         crate::timed_mpi!(
             MpiBsend,
-            destination_process.buffered_send_with_tag(&v, tag)
+            destination_process.buffered_send_with_tag(&v, tag),
+            payload_bytes = self.payload_bytes
         );
     }
 
@@ -105,9 +110,14 @@ where
         let mut types = types.to_vec();
         types.push(usize::equivalent_datatype());
 
-        let communicator =
+        #[allow(unused_mut)]
+        let mut communicator =
             TimestampedUserCommunicator::new(communicator, tag_termination_detection);
         let datatype = UserDatatype::structured(&blocklengths, &displacements, &types);
+        #[cfg(feature = "operation-timing")]
+        if crate::communication_statistics::enabled() {
+            communicator.payload_bytes = crate::communication_statistics::datatype_bytes(&datatype);
+        }
 
         Self {
             communicator,

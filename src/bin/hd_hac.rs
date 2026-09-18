@@ -190,6 +190,7 @@ fn main_with_cost_type_and_hash_function<T, H>(
 
     #[cfg(feature = "operation-timing")]
     if operation_timing.enabled() {
+        didp_mpi::communication_statistics::initialize(&communicator);
         didp_mpi::operation_timing::start_search(
             operation_timing.level,
             operation_timing.sample_interval,
