@@ -56,7 +56,7 @@ where
         node.serialize_to(&self.state_serializer, &mut self.tmp_buffer);
         let destination = self.communicator.process_at_rank(destination_rank);
         let v = unsafe { View::with_count_and_datatype(&self.tmp_buffer, 1, &self.user_datatype) };
-        destination.buffered_send_with_tag(&v, self.tag);
+        crate::timed_mpi!(MpiBsend, destination.buffered_send_with_tag(&v, self.tag));
     }
 
     pub fn receive(&mut self, source_rank: Rank, primal_bound: Option<T>) -> Option<M> {
@@ -64,7 +64,7 @@ where
         let mut v = unsafe {
             MutView::with_count_and_datatype(&mut self.tmp_buffer, 1, &self.user_datatype)
         };
-        source.receive_into_with_tag(&mut v, self.tag);
+        crate::timed_mpi!(MpiRecv, source.receive_into_with_tag(&mut v, self.tag));
 
         if let Some(bound) =
             M::get_bound_from_buffer(&self.model, &self.state_serializer, &self.tmp_buffer)

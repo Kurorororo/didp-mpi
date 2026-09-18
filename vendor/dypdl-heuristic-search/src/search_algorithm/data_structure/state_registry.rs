@@ -628,7 +628,8 @@ mod tests {
             cost,
             value: Cell::new(None),
         };
-        operation_timing::start(1);
+        operation_timing::start_search(2, 1);
+        let search_timer = operation_timing::Timer::start(Operation::SearchTotal, 1);
         assert!(registry.insert(make(state.clone(), 2)).information.is_some());
         assert!(registry.insert(make(state.clone(), 3)).information.is_none());
         let replacement =
@@ -651,7 +652,8 @@ mod tests {
             .insert_with(state, 0, |_, _, _| None)
             .information
             .is_none());
-        let measurements = operation_timing::finish();
+        drop(search_timer);
+        let measurements = operation_timing::finish_recording().measurements;
         for (operation, expected) in [
             (Operation::RegistryInsert, 2),
             (Operation::RegistryInsertWith, 4),

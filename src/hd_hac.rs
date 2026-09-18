@@ -638,7 +638,10 @@ where
             if destination_rank != self.communicator.rank() {
                 let buffer: [u8; 0] = [];
                 let destination_process = self.communicator.process_at_rank(destination_rank);
-                destination_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT);
+                crate::timed_mpi!(
+                    MpiBsend,
+                    destination_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT)
+                );
                 self.n_remaining_time_out_ack += 1;
             }
         }
@@ -647,16 +650,25 @@ where
     fn receive_time_out(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT);
+        crate::timed_mpi!(
+            MpiRecv,
+            source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT)
+        );
         self.is_time_out = true;
         self.local_dual_bound = self.compute_local_dual_bound();
-        source_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT_ACK);
+        crate::timed_mpi!(
+            MpiBsend,
+            source_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT_ACK)
+        );
     }
 
     fn receive_time_out_ack(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT_ACK);
+        crate::timed_mpi!(
+            MpiRecv,
+            source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT_ACK)
+        );
         self.n_remaining_time_out_ack -= 1;
     }
 
@@ -665,7 +677,10 @@ where
             if destination_rank != self.communicator.rank() {
                 let buffer: [u8; 0] = [];
                 let destination_process = self.communicator.process_at_rank(destination_rank);
-                destination_process.buffered_send_with_tag(&buffer, TAG_TERMINATE);
+                crate::timed_mpi!(
+                    MpiBsend,
+                    destination_process.buffered_send_with_tag(&buffer, TAG_TERMINATE)
+                );
             }
         }
 
@@ -675,7 +690,10 @@ where
     fn receive_terminate(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, TAG_TERMINATE);
+        crate::timed_mpi!(
+            MpiRecv,
+            source_process.receive_into_with_tag(&mut buffer, TAG_TERMINATE)
+        );
         self.is_terminated = true;
     }
 
@@ -704,11 +722,7 @@ where
     fn process_message(&mut self) {
         let any_process = self.communicator.any_process();
 
-        while let Some(status) = {
-            #[cfg(feature = "operation-timing")]
-            let _timer = Timer::start(Operation::MessageProbe, 1);
-            any_process.immediate_probe()
-        } {
+        while let Some(status) = crate::timed_mpi_probe!(any_process.immediate_probe()) {
             #[cfg(feature = "operation-timing")]
             let _timer = Timer::start(Operation::MessageDispatch, 1);
             let source_rank = status.source_rank();
@@ -905,7 +919,7 @@ where
         {
             #[cfg(feature = "operation-timing")]
             let _timer = Timer::start(Operation::PhaseBarrier, 1);
-            self.communicator.barrier();
+            crate::timed_mpi!(MpiBarrier, self.communicator.barrier());
         }
 
         #[cfg(feature = "operation-timing")]

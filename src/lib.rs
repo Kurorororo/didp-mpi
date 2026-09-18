@@ -20,9 +20,9 @@ mod mpi_anytime_search;
 mod mpi_termination_detector;
 mod node_communicator;
 mod node_data_type;
-mod node_message;
 #[cfg(feature = "memory-statistics")]
 pub mod node_memory;
+mod node_message;
 mod open_list;
 pub mod operation_timing;
 mod partial_solution;

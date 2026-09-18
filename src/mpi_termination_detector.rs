@@ -63,7 +63,10 @@ where
         let destination = self.communicator.process_at_rank(destination_rank);
         let message =
             TerminationDetectionkMessage(self.clock, self.count, false, self.communicator.rank());
-        destination.buffered_send_with_tag(&message, self.tag);
+        crate::timed_mpi!(
+            MpiBsend,
+            destination.buffered_send_with_tag(&message, self.tag)
+        );
     }
 
     pub fn receive_and_forward(
@@ -75,7 +78,10 @@ where
         let source = self.communicator.process_at_rank(source_rank);
 
         let mut message = TerminationDetectionkMessage::default();
-        source.receive_into_with_tag(&mut message, self.tag);
+        crate::timed_mpi!(
+            MpiRecv,
+            source.receive_into_with_tag(&mut message, self.tag)
+        );
 
         self.clock = cmp::max(message.0, self.clock);
         let invalid = message.2 || local_invalid;
@@ -87,7 +93,10 @@ where
             message.1 += self.count;
             message.2 = invalid || self.tmax >= message.0;
 
-            destination.buffered_send_with_tag(&message, self.tag);
+            crate::timed_mpi!(
+                MpiBsend,
+                destination.buffered_send_with_tag(&message, self.tag)
+            );
 
             None
         }

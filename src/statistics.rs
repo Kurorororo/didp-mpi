@@ -147,7 +147,10 @@ impl Statistics {
             self.dominated_after_closed,
         ];
 
-        destination.send_with_tag(&usize_buffer[..], tags.usize_tag);
+        crate::timed_mpi!(
+            MpiSend,
+            destination.send_with_tag(&usize_buffer[..], tags.usize_tag)
+        );
 
         let f64_buffer = [
             self.first_expanded_timestamp,
@@ -156,7 +159,10 @@ impl Statistics {
             self.last_received_timestamp,
         ];
 
-        destination.send_with_tag(&f64_buffer[..], tags.f64_tag);
+        crate::timed_mpi!(
+            MpiSend,
+            destination.send_with_tag(&f64_buffer[..], tags.f64_tag)
+        );
     }
 
     pub fn receive<C: Communicator>(
@@ -167,10 +173,16 @@ impl Statistics {
         let source = communicator.process_at_rank(source_rank);
 
         let mut usize_buffer = [0; 7];
-        source.receive_into_with_tag(&mut usize_buffer[..], tags.usize_tag);
+        crate::timed_mpi!(
+            MpiRecv,
+            source.receive_into_with_tag(&mut usize_buffer[..], tags.usize_tag)
+        );
 
         let mut f64_buffer = [0.0; 4];
-        source.receive_into_with_tag(&mut f64_buffer[..], tags.f64_tag);
+        crate::timed_mpi!(
+            MpiRecv,
+            source.receive_into_with_tag(&mut f64_buffer[..], tags.f64_tag)
+        );
 
         Self {
             expanded: usize_buffer[0],
@@ -214,10 +226,16 @@ impl Statistics {
             let root_process = communicator.process_at_rank(root_rank);
 
             let mut usize_recvbuf = vec![0; 7 * n_ranks];
-            root_process.gather_into_root(&usize_sendbuf, &mut usize_recvbuf[..]);
+            crate::timed_mpi!(
+                MpiGather,
+                root_process.gather_into_root(&usize_sendbuf, &mut usize_recvbuf[..])
+            );
 
             let mut f64_recvbuf = vec![0.0; 4 * n_ranks];
-            root_process.gather_into_root(&f64_sendbuf, &mut f64_recvbuf[..]);
+            crate::timed_mpi!(
+                MpiGather,
+                root_process.gather_into_root(&f64_sendbuf, &mut f64_recvbuf[..])
+            );
 
             (0..n_ranks)
                 .map(|rank| {
@@ -241,8 +259,8 @@ impl Statistics {
                 .collect()
         } else {
             let root_process = communicator.process_at_rank(root_rank);
-            root_process.gather_into(&usize_sendbuf);
-            root_process.gather_into(&f64_sendbuf);
+            crate::timed_mpi!(MpiGather, root_process.gather_into(&usize_sendbuf));
+            crate::timed_mpi!(MpiGather, root_process.gather_into(&f64_sendbuf));
             vec![]
         }
     }

@@ -3,364 +3,319 @@
 use linked_hash_map::LinkedHashMap;
 use yaml_rust::Yaml;
 
+/// Time one MPI API call. The non-instrumented build evaluates only the call.
+#[macro_export]
+macro_rules! timed_mpi {
+    ($operation:ident, $call:expr) => {{
+        #[cfg(feature = "operation-timing")]
+        let _mpi_timer = dypdl_heuristic_search::operation_timing::Timer::start(
+            dypdl_heuristic_search::operation_timing::Operation::$operation,
+            1,
+        );
+        $call
+    }};
+}
+
+/// Time and classify a nonblocking probe without changing its return value.
+#[macro_export]
+macro_rules! timed_mpi_probe {
+    ($call:expr) => {{
+        #[cfg(feature = "operation-timing")]
+        let mut mpi_timer = dypdl_heuristic_search::operation_timing::Timer::start(
+            dypdl_heuristic_search::operation_timing::Operation::MpiIprobeMiss,
+            1,
+        );
+        let result = $call;
+        #[cfg(feature = "operation-timing")]
+        mpi_timer.probe_result(result.is_some());
+        result
+    }};
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OperationTimingParameters {
-    pub enabled: bool,
+    pub level: u8,
     pub sample_interval: u64,
 }
 
 impl OperationTimingParameters {
     pub fn load_from_map(map: &LinkedHashMap<Yaml, Yaml>) -> Self {
-        let enabled = crate::load_bool_from_map(map, "operation_timing").unwrap_or(false);
-        let sample_interval = map
-            .get(&Yaml::String("operation_timing_sample_interval".into()))
-            .map(|value| {
-                value
-                    .as_i64()
-                    .filter(|value| *value > 0)
-                    .expect("operation_timing_sample_interval must be a positive integer")
-                    as u64
-            })
-            .unwrap_or(1);
+        for (old, replacement) in [
+            ("operation_timing", "operation_timing_level"),
+            ("operation_timing_sample_interval", "timing_sample_interval"),
+            ("mpi_timing_sample_interval", "timing_sample_interval"),
+            ("mpi_send_timing_sample_interval", "timing_sample_interval"),
+            (
+                "mpi_send_timing",
+                "operation_timing_level; specialized send diagnostics are no longer collected",
+            ),
+        ] {
+            assert!(
+                !map.contains_key(&Yaml::String(old.into())),
+                "{old} has been removed; use {replacement}"
+            );
+        }
         Self {
-            enabled,
-            sample_interval,
+            level: map
+                .get(&Yaml::String("operation_timing_level".into()))
+                .map(|v| {
+                    v.as_i64()
+                        .filter(|v| (0..=2).contains(v))
+                        .expect("operation_timing_level must be 0, 1, or 2")
+                        as u8
+                })
+                .unwrap_or(0),
+            sample_interval: map
+                .get(&Yaml::String("timing_sample_interval".into()))
+                .map(|v| {
+                    v.as_i64()
+                        .filter(|v| *v > 0)
+                        .expect("timing_sample_interval must be a positive integer")
+                        as u64
+                })
+                .unwrap_or(1),
         }
     }
 
+    pub fn enabled(&self) -> bool {
+        self.level > 0
+    }
+
     pub fn validate(&self) {
+        assert!(self.level <= 2, "operation_timing_level must be 0, 1, or 2");
         assert!(
             self.sample_interval > 0,
-            "operation timing sample interval must be positive"
+            "timing sample interval must be positive"
         );
         assert!(
-            !self.enabled || cfg!(feature = "operation-timing"),
-            "operation_timing: true requires a build with --features operation-timing"
+            !self.enabled() || cfg!(feature = "operation-timing"),
+            "operation timing requires a build with --features operation-timing"
         );
     }
 }
 
 #[cfg(feature = "operation-timing")]
-pub use dypdl_heuristic_search::operation_timing::start;
+pub use dypdl_heuristic_search::operation_timing::start_search;
 #[cfg(feature = "operation-timing")]
 pub use reporting::finish_and_dump;
 
 #[cfg(feature = "operation-timing")]
 mod reporting {
-    use dypdl_heuristic_search::operation_timing::{self, Measurement, Measurements, Operation};
+    use dypdl_heuristic_search::operation_timing::{self, Operation, Recording};
     use mpi::traits::*;
     use std::fs::File;
     use std::io::{self, BufWriter, Write};
 
-    const FIELDS: usize = 6;
+    // Three exact counters and a corrected estimate (IEEE bits; NaN = unavailable).
+    const FIELDS: usize = 4;
     const PACKED_LEN: usize = FIELDS * Operation::ALL.len();
-    const REPORTS: [&str; 3] = [
-        "operation_timing",
-        "search_phase_timing",
-        "search_detail_timing",
-    ];
+    type Report = [Row; Operation::ALL.len()];
 
-    fn pack(measurements: &Measurements) -> [u64; PACKED_LEN] {
-        let mut buffer = [0; PACKED_LEN];
-        for (measurement, values) in measurements.iter().zip(buffer.chunks_exact_mut(FIELDS)) {
-            values.copy_from_slice(&[
-                measurement.calls,
-                measurement.timed_calls,
-                measurement.sampled_ns,
-                measurement.size_sum,
-                measurement.max_size,
-                measurement.zero_size_calls,
-            ]);
-        }
-        buffer
+    #[derive(Clone, Copy, Default)]
+    struct Row {
+        calls: u64,
+        timed_calls: u64,
+        sampled_ns: u64,
+        estimate: f64,
     }
 
-    fn unpack(buffer: &[u64]) -> Measurements {
-        assert_eq!(buffer.len(), PACKED_LEN);
-        let mut measurements = [Measurement::default(); Operation::ALL.len()];
-        for (measurement, values) in measurements.iter_mut().zip(buffer.chunks_exact(FIELDS)) {
-            *measurement = Measurement {
-                calls: values[0],
-                timed_calls: values[1],
-                sampled_ns: values[2],
-                size_sum: values[3],
-                max_size: values[4],
-                zero_size_calls: values[5],
-            };
-        }
-        measurements
-    }
-
-    #[derive(Clone, Copy, Debug, Default)]
-    struct ReportMeasurement {
-        raw: Measurement,
-        estimated_total_ns: f64,
-    }
-
-    impl ReportMeasurement {
-        fn add(&mut self, measurement: Measurement) {
-            self.raw.calls += measurement.calls;
-            self.raw.timed_calls += measurement.timed_calls;
-            self.raw.sampled_ns += measurement.sampled_ns;
-            self.raw.size_sum += measurement.size_sum;
-            self.raw.max_size = self.raw.max_size.max(measurement.max_size);
-            self.raw.zero_size_calls += measurement.zero_size_calls;
-            // Weight each rank by its actual call count, not its sample count.
-            self.estimated_total_ns += measurement.estimated_ns();
+    impl Row {
+        fn add(&mut self, row: Self) {
+            self.calls += row.calls;
+            self.timed_calls += row.timed_calls;
+            self.sampled_ns += row.sampled_ns;
+            self.estimate += row.estimate;
         }
     }
 
-    fn write_csv<W: Write>(
+    fn pack(recording: &Recording) -> [u64; PACKED_LEN] {
+        let mut packed = [0; PACKED_LEN];
+        for ((m, estimate), fields) in recording
+            .measurements
+            .iter()
+            .zip(recording.estimated_ns)
+            .zip(packed.chunks_exact_mut(FIELDS))
+        {
+            fields.copy_from_slice(&[m.calls, m.timed_calls, m.sampled_ns, estimate.to_bits()]);
+        }
+        packed
+    }
+
+    fn unpack(packed: &[u64]) -> Report {
+        assert_eq!(packed.len(), PACKED_LEN);
+        std::array::from_fn(|i| {
+            let v = &packed[i * FIELDS..];
+            Row {
+                calls: v[0],
+                timed_calls: v[1],
+                sampled_ns: v[2],
+                estimate: f64::from_bits(v[3]),
+            }
+        })
+    }
+
+    fn ns(value: f64) -> String {
+        if value.is_finite() {
+            format!("{value:.3}")
+        } else {
+            String::new()
+        }
+    }
+
+    fn write_rows<W: Write>(
         writer: &mut W,
         rank: &str,
-        measurements: &[ReportMeasurement; Operation::ALL.len()],
-        sample_interval: u64,
-        report: &str,
+        report: &Report,
+        level: u8,
+        interval: u64,
     ) -> io::Result<()> {
-        let expansions = measurements[Operation::PhaseExpansion as usize].raw.calls;
-        writeln!(writer, "rank,operation,inclusive,calls,timed_calls,sampled_ns,estimated_total_ns,mean_ns,size_sum,mean_size,max_size,zero_size_calls,sample_interval,expansions,calls_per_expansion,ns_per_expansion")?;
-        for (operation, measurement) in Operation::ALL.iter().zip(measurements) {
-            if operation.report() != report {
-                continue;
-            }
-            let raw = measurement.raw;
-            let mean_ns = (raw.calls > 0)
-                .then(|| format!("{:.3}", measurement.estimated_total_ns / raw.calls as f64))
-                .unwrap_or_default();
-            let mean_size = (raw.calls > 0)
-                .then(|| format!("{:.3}", raw.size_sum as f64 / raw.calls as f64))
-                .unwrap_or_default();
+        for operation in Operation::ALL.into_iter().filter(|op| op.at_level(level)) {
+            let row = report[operation as usize];
+            let reference = operation == Operation::SearchTotal;
+            let accounting = if reference {
+                "reference"
+            } else if !row.estimate.is_finite() {
+                "unavailable"
+            } else if interval == 1 {
+                "measured"
+            } else {
+                "estimated"
+            };
             writeln!(
                 writer,
-                "{},{},{},{},{},{},{:.3},{},{},{},{},{},{},{},{},{}",
+                "{},{},{},{},{},{},{},{},{}",
                 rank,
                 operation.name(),
-                operation.inclusive(),
-                raw.calls,
-                raw.timed_calls,
-                raw.sampled_ns,
-                measurement.estimated_total_ns,
-                mean_ns,
-                raw.size_sum,
-                mean_size,
-                raw.max_size,
-                raw.zero_size_calls,
-                operation.sample_interval(sample_interval),
-                expansions,
-                per_expansion(raw.calls as f64, expansions),
-                per_expansion(measurement.estimated_total_ns, expansions),
+                row.calls,
+                row.timed_calls,
+                row.sampled_ns,
+                ns(row.estimate),
+                if row.calls > 0 {
+                    ns(row.estimate / row.calls as f64)
+                } else {
+                    String::new()
+                },
+                if reference || operation == Operation::NonMpiSearch {
+                    1
+                } else {
+                    interval
+                },
+                accounting
             )?;
         }
         Ok(())
     }
 
-    fn per_expansion(value: f64, expansions: u64) -> String {
-        (expansions > 0)
-            .then(|| format!("{:.6}", value / expansions as f64))
-            .unwrap_or_default()
-    }
-
-    // Median uses the middle pair for even rank counts; p95 is nearest-rank.
-    fn rank_distribution(mut values: Vec<f64>) -> [f64; 4] {
-        assert!(!values.is_empty());
-        values.sort_by(f64::total_cmp);
-        let n = values.len();
-        [
-            values[0],
-            (values[(n - 1) / 2] + values[n / 2]) / 2.0,
-            values[(95 * n).div_ceil(100) - 1],
-            values[n - 1],
-        ]
-    }
-
-    fn write_rank_summary<W: Write>(
-        writer: &mut W,
-        ranks: &[Measurements],
-        aggregate: &[ReportMeasurement; Operation::ALL.len()],
-    ) -> io::Result<()> {
-        writeln!(writer, "report,operation,inclusive,ranks,active_ranks,expansions,calls,estimated_total_ns,calls_per_expansion,ns_per_expansion,rank_min_ns,rank_median_ns,rank_p95_ns,rank_max_ns")?;
-        let expansions = aggregate[Operation::PhaseExpansion as usize].raw.calls;
-        for operation in Operation::ALL {
-            let index = operation as usize;
-            let total = aggregate[index];
-            let active_ranks = ranks.iter().filter(|rank| rank[index].calls > 0).count();
-            let [min, median, p95, max] = rank_distribution(
-                ranks
-                    .iter()
-                    .map(|rank| rank[index].estimated_ns())
-                    .collect(),
-            );
-            writeln!(
-                writer,
-                "{},{},{},{},{},{},{},{:.3},{},{},{:.3},{:.3},{:.3},{:.3}",
-                operation.report(),
-                operation.name(),
-                operation.inclusive(),
-                ranks.len(),
-                active_ranks,
-                expansions,
-                total.raw.calls,
-                total.estimated_total_ns,
-                per_expansion(total.raw.calls as f64, expansions),
-                per_expansion(total.estimated_total_ns, expansions),
-                min,
-                median,
-                p95,
-                max
-            )?;
-        }
-        Ok(())
-    }
-
-    /// Stop local recording and collectively gather onto rank zero. Rank zero
-    /// writes every per-rank CSV and the aggregate; no shared-filesystem races.
-    /// All ranks must call this after search with the same sample interval.
-    pub fn finish_and_dump<C: Communicator>(
-        communicator: &C,
-        sample_interval: u64,
-    ) -> io::Result<()> {
-        let local = pack(&operation_timing::finish());
+    /// Every rank stops recording; rank zero writes one CSV containing all ranks
+    /// followed by their aggregate. No report collection is included in timing.
+    pub fn finish_and_dump<C: Communicator>(communicator: &C) -> io::Result<()> {
+        let recording = operation_timing::finish_recording();
+        let local = pack(&recording);
         let root = communicator.process_at_rank(0);
         if communicator.rank() != 0 {
             root.gather_into(&local[..]);
             return Ok(());
         }
-        let mut received = vec![0u64; PACKED_LEN * communicator.size() as usize];
-        root.gather_into_root(&local[..], &mut received[..]);
-        let mut aggregate = [ReportMeasurement::default(); Operation::ALL.len()];
-        let ranks: Vec<_> = received.chunks_exact(PACKED_LEN).map(unpack).collect();
-        for (rank, measurements) in ranks.iter().enumerate() {
-            let mut report = [ReportMeasurement::default(); Operation::ALL.len()];
-            for ((local, total), measurement) in report
-                .iter_mut()
-                .zip(&mut aggregate)
-                .zip(measurements.iter().copied())
-            {
-                local.add(measurement);
-                total.add(measurement);
+        let mut gathered = vec![0; PACKED_LEN * communicator.size() as usize];
+        root.gather_into_root(&local[..], &mut gathered[..]);
+        let mut total = [Row::default(); Operation::ALL.len()];
+        let mut file = BufWriter::new(File::create("timing.csv")?);
+        writeln!(file, "rank,operation,calls,timed_calls,sampled_ns,estimated_total_ns,mean_ns,sample_interval,accounting")?;
+        for (rank, packed) in gathered.chunks_exact(PACKED_LEN).enumerate() {
+            let report = unpack(packed);
+            for (total, row) in total.iter_mut().zip(&report) {
+                total.add(*row);
             }
-            for name in REPORTS {
-                let mut file = BufWriter::new(File::create(format!("{name}_rank_{rank}.csv"))?);
-                write_csv(&mut file, &rank.to_string(), &report, sample_interval, name)?;
-                file.flush()?;
-            }
+            write_rows(
+                &mut file,
+                &rank.to_string(),
+                &report,
+                recording.level,
+                recording.sample_interval,
+            )?;
         }
-        for name in REPORTS {
-            let mut file = BufWriter::new(File::create(format!("{name}.csv"))?);
-            write_csv(&mut file, "all", &aggregate, sample_interval, name)?;
-            file.flush()?;
-        }
-        let mut file = BufWriter::new(File::create("timing_rank_summary.csv")?);
-        write_rank_summary(&mut file, &ranks, &aggregate)?;
+        write_rows(
+            &mut file,
+            "all",
+            &total,
+            recording.level,
+            recording.sample_interval,
+        )?;
         file.flush()
     }
 
     #[cfg(test)]
     mod tests {
         use super::*;
-
+        use dypdl_heuristic_search::operation_timing::Measurement;
         #[test]
-        fn packing_round_trip() {
-            let mut measurements = [Measurement::default(); Operation::ALL.len()];
-            measurements[2] = Measurement {
-                calls: 9,
-                timed_calls: 3,
-                sampled_ns: 70,
-                size_sum: 80,
-                max_size: 33,
-                zero_size_calls: 2,
+        fn packing_preserves_corrected_and_missing_estimates() {
+            let mut recording = Recording {
+                measurements: [Measurement::default(); Operation::ALL.len()],
+                estimated_ns: [0.0; Operation::ALL.len()],
+                level: 2,
+                sample_interval: 7,
             };
-            assert_eq!(unpack(&pack(&measurements)), measurements);
-        }
-
-        #[test]
-        fn aggregate_is_call_weighted_and_max_is_not_summed() {
-            let mut total = ReportMeasurement::default();
-            total.add(Measurement {
-                calls: 10,
-                timed_calls: 2,
-                sampled_ns: 20,
-                max_size: 30,
-                ..Default::default()
-            });
-            total.add(Measurement {
-                calls: 1,
-                timed_calls: 1,
-                sampled_ns: 100,
-                max_size: 20,
-                ..Default::default()
-            });
-            assert_eq!(total.raw.calls, 11);
-            assert_eq!(total.raw.timed_calls, 3);
-            assert_eq!(total.raw.sampled_ns, 120);
-            assert_eq!(total.estimated_total_ns, 200.0);
-            assert_eq!(total.raw.max_size, 30);
-        }
-
-        #[test]
-        fn csv_includes_zero_call_operations_without_nan() {
-            let report = [ReportMeasurement::default(); Operation::ALL.len()];
-            let mut bytes = vec![];
-            write_csv(&mut bytes, "all", &report, 1, "operation_timing").unwrap();
-            let csv = String::from_utf8(bytes).unwrap();
-            assert_eq!(csv.lines().count(), 14);
-            assert!(csv.contains("all,heap_primary_push,false,0,0,0,0.000,,0,,0,0,1"));
-            assert!(!csv.contains("NaN"));
-        }
-
-        #[test]
-        fn phase_report_and_normalization() {
-            let mut report = [ReportMeasurement::default(); Operation::ALL.len()];
-            report[Operation::PhaseExpansion as usize].add(Measurement {
-                calls: 4,
+            recording.measurements[0] = Measurement {
+                calls: 3,
                 timed_calls: 1,
                 sampled_ns: 20,
                 ..Default::default()
-            });
-            report[Operation::SearchTotal as usize].add(Measurement {
-                calls: 1,
-                timed_calls: 1,
-                sampled_ns: 300,
+            };
+            recording.estimated_ns[0] = -10.0;
+            recording.estimated_ns[1] = f64::NAN;
+            let report = unpack(&pack(&recording));
+            assert_eq!(
+                (report[0].calls, report[0].timed_calls, report[0].sampled_ns),
+                (3, 1, 20)
+            );
+            assert_eq!(report[0].estimate, -10.0);
+            assert!(report[1].estimate.is_nan());
+        }
+        #[test]
+        fn aggregation_sums_rank_estimates_and_preserves_missing() {
+            let mut total = Row::default();
+            total.add(Row {
+                calls: 3,
+                estimate: 60.0,
                 ..Default::default()
             });
-            let mut bytes = vec![];
-            write_csv(&mut bytes, "0", &report, 100, "search_phase_timing").unwrap();
-            let csv = String::from_utf8(bytes).unwrap();
-            assert_eq!(csv.lines().count(), 12);
-            assert!(!csv.contains("registry_insert"));
-            assert!(csv
-                .lines()
-                .find(|line| line.starts_with("0,search_total,"))
-                .unwrap()
-                .ends_with(",1,4,0.250000,75.000000"));
-            assert!(csv
-                .lines()
-                .find(|line| line.starts_with("0,expansion,"))
-                .unwrap()
-                .ends_with(",100,4,1.000000,20.000000"));
+            total.add(Row {
+                calls: 1,
+                estimate: 100.0,
+                ..Default::default()
+            });
+            assert_eq!(total.calls, 4);
+            assert_eq!(total.estimate, 160.0);
+            total.add(Row {
+                estimate: f64::NAN,
+                ..Default::default()
+            });
+            assert!(total.estimate.is_nan());
         }
-
         #[test]
-        fn rank_summary_includes_inactive_ranks_and_handles_zero_expansions() {
-            assert_eq!(
-                rank_distribution(vec![100.0, 0.0, 30.0, 10.0]),
-                [0.0, 20.0, 100.0, 100.0]
-            );
-            assert_eq!(rank_distribution(vec![7.0]), [7.0; 4]);
-            assert_eq!(
-                rank_distribution((1..=20).map(f64::from).collect()),
-                [1.0, 10.5, 19.0, 20.0]
-            );
-            let ranks = [[Measurement::default(); Operation::ALL.len()]; 2];
-            let totals = [ReportMeasurement::default(); Operation::ALL.len()];
+        fn compact_rows_preserve_unavailable_and_negative_values() {
+            let mut report = [Row::default(); Operation::ALL.len()];
+            report[Operation::NonMpiSearch as usize] = Row {
+                calls: 1,
+                timed_calls: 1,
+                sampled_ns: 10,
+                estimate: -30.0,
+            };
+            report[Operation::MpiIprobeHit as usize] = Row {
+                calls: 2,
+                estimate: f64::NAN,
+                ..Default::default()
+            };
             let mut bytes = vec![];
-            write_rank_summary(&mut bytes, &ranks, &totals).unwrap();
+            write_rows(&mut bytes, "0", &report, 1, 100).unwrap();
+            write_rows(&mut bytes, "all", &report, 1, 100).unwrap();
             let csv = String::from_utf8(bytes).unwrap();
-            assert_eq!(csv.lines().count(), Operation::ALL.len() + 1);
-            assert!(csv.contains(
-                "operation_timing,heap_primary_push,false,2,0,0,0,0.000,,,0.000,0.000,0.000,0.000"
-            ));
+            assert_eq!(csv.lines().count(), 18);
+            assert!(csv.lines().all(|line| line.split(',').count() == 9));
             assert!(!csv.contains("NaN"));
+            assert!(csv.contains("0,non_mpi_search,1,1,10,-30.000,-30.000,1,estimated"));
+            assert!(csv.contains("all,MPI_Iprobe_hit,2,0,0,,,100,unavailable"));
         }
     }
 }
@@ -369,56 +324,61 @@ mod reporting {
 mod tests {
     use super::*;
     use yaml_rust::YamlLoader;
-
     fn load(yaml: &str) -> OperationTimingParameters {
         let yaml = YamlLoader::load_from_str(yaml).unwrap();
         OperationTimingParameters::load_from_map(yaml[0].as_hash().unwrap())
     }
-
     #[test]
-    fn default_disabled() {
-        let parameters = load("{}");
-        assert!(!parameters.enabled);
-        assert_eq!(parameters.sample_interval, 1);
-        parameters.validate();
-    }
-
-    #[test]
-    fn loads_sampling() {
+    fn defaults_and_two_options() {
         assert_eq!(
-            load("operation_timing: true\noperation_timing_sample_interval: 100"),
+            load("{}"),
             OperationTimingParameters {
-                enabled: true,
+                level: 0,
+                sample_interval: 1
+            }
+        );
+        load("{}").validate();
+        assert_eq!(
+            load("operation_timing_level: 2\ntiming_sample_interval: 100"),
+            OperationTimingParameters {
+                level: 2,
                 sample_interval: 100
             }
         );
     }
-
     #[test]
-    fn rejects_invalid_intervals() {
-        for value in ["0", "-1", "1.5", "true", "'10'"] {
-            assert!(std::panic::catch_unwind(|| load(&format!(
-                "operation_timing_sample_interval: {value}"
-            )))
-            .is_err());
+    fn invalid_and_retired_options_are_not_silently_ignored() {
+        for key in [
+            "operation_timing",
+            "operation_timing_sample_interval",
+            "mpi_timing_sample_interval",
+            "mpi_send_timing",
+            "mpi_send_timing_sample_interval",
+        ] {
+            assert!(std::panic::catch_unwind(|| load(&format!("{key}: 1"))).is_err());
+        }
+        for value in ["-1", "3", "1.5", "true", "'1'"] {
+            assert!(
+                std::panic::catch_unwind(|| load(&format!("operation_timing_level: {value}")))
+                    .is_err()
+            );
+        }
+        for value in ["0", "-1", "1.5", "true", "'100'"] {
+            assert!(
+                std::panic::catch_unwind(|| load(&format!("timing_sample_interval: {value}")))
+                    .is_err()
+            );
         }
     }
-
-    #[test]
-    fn rejects_non_boolean_switch() {
-        assert!(std::panic::catch_unwind(|| load("operation_timing: 1")).is_err());
-    }
-
     #[cfg(not(feature = "operation-timing"))]
     #[test]
     #[should_panic(expected = "requires a build with --features operation-timing")]
     fn rejects_unavailable_instrumentation() {
-        load("operation_timing: true").validate();
+        load("operation_timing_level: 1").validate();
     }
-
     #[cfg(feature = "operation-timing")]
     #[test]
     fn accepts_available_instrumentation() {
-        load("operation_timing: true").validate();
+        load("operation_timing_level: 1").validate();
     }
 }

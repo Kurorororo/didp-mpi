@@ -189,8 +189,11 @@ fn main_with_cost_type_and_hash_function<T, H>(
     }
 
     #[cfg(feature = "operation-timing")]
-    if operation_timing.enabled {
-        didp_mpi::operation_timing::start(operation_timing.sample_interval);
+    if operation_timing.enabled() {
+        didp_mpi::operation_timing::start_search(
+            operation_timing.level,
+            operation_timing.sample_interval,
+        );
     }
     let mut solver = HdHac::new(input, evaluators, parameters, hash_function, &communicator);
     if communicator.rank() == 0 && memory_monitoring.enabled {
@@ -238,17 +241,11 @@ fn main_with_cost_type_and_hash_function<T, H>(
     let (solution, statistics_list) = solver.search();
 
     #[cfg(feature = "operation-timing")]
-    if operation_timing.enabled {
-        didp_mpi::operation_timing::finish_and_dump(
-            &communicator,
-            operation_timing.sample_interval,
-        )
-        .expect("failed to write operation timing CSVs");
+    if operation_timing.enabled() {
+        didp_mpi::operation_timing::finish_and_dump(&communicator)
+            .expect("failed to write timing CSVs");
         if communicator.rank() == 0 {
-            println!(
-                "Operation timings: operation_timing.csv and operation_timing_rank_<rank>.csv"
-            );
-            println!("Search timings: search_phase_timing*.csv, search_detail_timing*.csv, and timing_rank_summary.csv");
+            println!("Timings: timing.csv (all ranks and aggregate)");
         }
     }
 

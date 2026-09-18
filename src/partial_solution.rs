@@ -43,9 +43,18 @@ pub fn send_partial_solution<D: Destination>(
         parent.is_some(),
     );
 
-    destination.buffered_send_with_tag(&fixed_length_data, tags.fixed_length_data);
-    destination.buffered_send_with_tag(transition_ids, tags.transition_ids);
-    destination.buffered_send_with_tag(transition_forced, tags.transition_forced);
+    crate::timed_mpi!(
+        MpiBsend,
+        destination.buffered_send_with_tag(&fixed_length_data, tags.fixed_length_data)
+    );
+    crate::timed_mpi!(
+        MpiBsend,
+        destination.buffered_send_with_tag(transition_ids, tags.transition_ids)
+    );
+    crate::timed_mpi!(
+        MpiBsend,
+        destination.buffered_send_with_tag(transition_forced, tags.transition_forced)
+    );
 }
 
 pub fn receive_partial_solution<S: Source>(
@@ -55,15 +64,24 @@ pub fn receive_partial_solution<S: Source>(
     tags: &PartialSolutionTags,
 ) -> Option<(Rank, usize)> {
     let mut fixed_length_data = PartialSolutionFixeLengthData::default();
-    source.receive_into_with_tag(&mut fixed_length_data, tags.fixed_length_data);
+    crate::timed_mpi!(
+        MpiRecv,
+        source.receive_into_with_tag(&mut fixed_length_data, tags.fixed_length_data)
+    );
 
     let n = fixed_length_data.0[0];
     let offset = transition_ids.len();
     transition_ids.resize(offset + n, 0);
     transition_forced.resize(offset + n, false);
 
-    source.receive_into_with_tag(&mut transition_ids[offset..], tags.transition_ids);
-    source.receive_into_with_tag(&mut transition_forced[offset..], tags.transition_forced);
+    crate::timed_mpi!(
+        MpiRecv,
+        source.receive_into_with_tag(&mut transition_ids[offset..], tags.transition_ids)
+    );
+    crate::timed_mpi!(
+        MpiRecv,
+        source.receive_into_with_tag(&mut transition_forced[offset..], tags.transition_forced)
+    );
 
     if fixed_length_data.2 {
         Some((fixed_length_data.1, fixed_length_data.0[1]))
@@ -113,9 +131,18 @@ pub fn send_partial_solution_with_time_stamp<D: Destination>(
         parent.is_some(),
     );
 
-    destination.buffered_send_with_tag(&fixed_length_data, tags.fixed_length_data);
-    destination.buffered_send_with_tag(transition_ids, tags.transition_ids);
-    destination.buffered_send_with_tag(transition_forced, tags.transition_forced);
+    crate::timed_mpi!(
+        MpiBsend,
+        destination.buffered_send_with_tag(&fixed_length_data, tags.fixed_length_data)
+    );
+    crate::timed_mpi!(
+        MpiBsend,
+        destination.buffered_send_with_tag(transition_ids, tags.transition_ids)
+    );
+    crate::timed_mpi!(
+        MpiBsend,
+        destination.buffered_send_with_tag(transition_forced, tags.transition_forced)
+    );
 }
 
 pub fn receive_partial_solution_with_timestamp<S: Source>(
@@ -126,7 +153,10 @@ pub fn receive_partial_solution_with_timestamp<S: Source>(
     tags: &PartialSolutionTags,
 ) -> (Option<(Rank, usize)>, bool) {
     let mut fixed_length_data = PartialSolutionWithTimestampFixeLengthData::default();
-    source.receive_into_with_tag(&mut fixed_length_data, tags.fixed_length_data);
+    crate::timed_mpi!(
+        MpiRecv,
+        source.receive_into_with_tag(&mut fixed_length_data, tags.fixed_length_data)
+    );
 
     let other_timestamp = fixed_length_data.0[2];
     let n = fixed_length_data.0[0];
@@ -134,8 +164,14 @@ pub fn receive_partial_solution_with_timestamp<S: Source>(
     transition_ids.resize(offset + n, 0);
     transition_forced.resize(offset + n, false);
 
-    source.receive_into_with_tag(&mut transition_ids[offset..], tags.transition_ids);
-    source.receive_into_with_tag(&mut transition_forced[offset..], tags.transition_forced);
+    crate::timed_mpi!(
+        MpiRecv,
+        source.receive_into_with_tag(&mut transition_ids[offset..], tags.transition_ids)
+    );
+    crate::timed_mpi!(
+        MpiRecv,
+        source.receive_into_with_tag(&mut transition_forced[offset..], tags.transition_forced)
+    );
 
     if other_timestamp < timestamp {
         transition_ids.truncate(offset);

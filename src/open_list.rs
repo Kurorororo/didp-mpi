@@ -189,7 +189,8 @@ mod tests {
         let mut layered = BinaryHeap::new();
         let stale = Rc::new(MockGNode::new(0));
         stale.close();
-        operation_timing::start(1);
+        operation_timing::start_search(2, 1);
+        let search_timer = operation_timing::Timer::start(Operation::SearchTotal, 1);
         push_primary(&mut primary, (stale.clone(), 0));
         push_primary(&mut primary, (Rc::new(MockGNode::new(1)), 1));
         push_layered(&mut layered, stale);
@@ -198,7 +199,8 @@ mod tests {
         assert!(pop_from_open_with_depth(&mut primary, &model, None).is_none());
         assert!(pop_from_open(&mut layered, &model, None).is_some());
         assert!(pop_from_open(&mut layered, &model, None).is_none());
-        let measurements = operation_timing::finish();
+        drop(search_timer);
+        let measurements = operation_timing::finish_recording().measurements;
         for operation in [Operation::HeapPrimaryPush, Operation::HeapLayeredPush] {
             assert_eq!(measurements[operation as usize].calls, 2);
             assert_eq!(measurements[operation as usize].size_sum, 1);
@@ -233,10 +235,12 @@ mod tests {
             primary.push((Rc::new(MockFNode::new(cost, 1)), 0));
             layered.push(Rc::new(MockFNode::new(cost, 1)));
         }
-        operation_timing::start(1);
+        operation_timing::start_search(2, 1);
+        let search_timer = operation_timing::Timer::start(Operation::SearchTotal, 1);
         assert!(pop_from_open_with_depth(&mut primary, &model, Some(1)).is_none());
         assert!(pop_from_open(&mut layered, &model, Some(1)).is_none());
-        let measurements = operation_timing::finish();
+        drop(search_timer);
+        let measurements = operation_timing::finish_recording().measurements;
         for operation in [Operation::HeapPrimaryClear, Operation::HeapLayeredClear] {
             let measurement = measurements[operation as usize];
             assert_eq!(measurement.calls, 1);

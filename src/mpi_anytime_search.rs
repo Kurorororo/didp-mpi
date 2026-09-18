@@ -91,11 +91,11 @@ impl<T: IsFloat> NTransitionIdsAndCost<T> {
                 self.n_transitions,
                 self.cost.to_continuous(),
             );
-            destination.buffered_send_with_tag(&message, tag);
+            crate::timed_mpi!(MpiBsend, destination.buffered_send_with_tag(&message, tag));
         } else {
             let message =
                 NTransitionIdsAndCostForSend::<Integer>(self.n_transitions, self.cost.to_integer());
-            destination.buffered_send_with_tag(&message, tag);
+            crate::timed_mpi!(MpiBsend, destination.buffered_send_with_tag(&message, tag));
         }
     }
 
@@ -104,15 +104,19 @@ impl<T: IsFloat> NTransitionIdsAndCost<T> {
         S: Source,
     {
         if T::is_float() {
-            let (message, _) =
-                source.receive_with_tag::<NTransitionIdsAndCostForSend<Continuous>>(tag);
+            let (message, _) = crate::timed_mpi!(
+                MpiRecv,
+                source.receive_with_tag::<NTransitionIdsAndCostForSend<Continuous>>(tag)
+            );
             Self {
                 n_transitions: message.0,
                 cost: T::from(message.1),
             }
         } else {
-            let (message, _) =
-                source.receive_with_tag::<NTransitionIdsAndCostForSend<Integer>>(tag);
+            let (message, _) = crate::timed_mpi!(
+                MpiRecv,
+                source.receive_with_tag::<NTransitionIdsAndCostForSend<Integer>>(tag)
+            );
             Self {
                 n_transitions: message.0,
                 cost: T::from(message.1),
@@ -169,7 +173,7 @@ impl<T: IsFloat> FinalSolutionInformation<T> {
                 [cost, bound],
                 n_transitions,
             );
-            destination.buffered_send_with_tag(&message, tag);
+            crate::timed_mpi!(MpiBsend, destination.buffered_send_with_tag(&message, tag));
         } else {
             let cost = self.cost.map_or(0, |cost| cost.to_integer());
             let bound = self.bound.map_or(0, |bound| bound.to_integer());
@@ -179,14 +183,16 @@ impl<T: IsFloat> FinalSolutionInformation<T> {
                 [cost, bound],
                 n_transitions,
             );
-            destination.buffered_send_with_tag(&message, tag);
+            crate::timed_mpi!(MpiBsend, destination.buffered_send_with_tag(&message, tag));
         }
     }
 
     pub fn receive<S: Source>(source: &S, tag: Tag) -> Self {
         if T::is_float() {
-            let (message, _) =
-                source.receive_with_tag::<FinalSolutionInformationForSend<Continuous>>(tag);
+            let (message, _) = crate::timed_mpi!(
+                MpiRecv,
+                source.receive_with_tag::<FinalSolutionInformationForSend<Continuous>>(tag)
+            );
             Self {
                 cost: if message.0[0] {
                     Some(T::from(message.1[0]))
@@ -201,8 +207,10 @@ impl<T: IsFloat> FinalSolutionInformation<T> {
                 n_transitions: if message.0[0] { Some(message.2) } else { None },
             }
         } else {
-            let (message, _) =
-                source.receive_with_tag::<FinalSolutionInformationForSend<Integer>>(tag);
+            let (message, _) = crate::timed_mpi!(
+                MpiRecv,
+                source.receive_with_tag::<FinalSolutionInformationForSend<Integer>>(tag)
+            );
             Self {
                 cost: if message.0[0] {
                     Some(T::from(message.1[0]))
@@ -465,11 +473,17 @@ where
         };
         let destination = self.communicator.process_at_rank(self.root_rank);
         message.send(&destination, TAG_N_TRANSITION_IDS_AND_COST);
-        destination
-            .buffered_send_with_tag(&self.reverse_transition_ids, TAG_REVERSE_TRANSITION_IDS);
-        destination.buffered_send_with_tag(
-            &self.reverse_transition_forced,
-            TAG_REVERSE_TRANSITION_FORCED,
+        crate::timed_mpi!(
+            MpiBsend,
+            destination
+                .buffered_send_with_tag(&self.reverse_transition_ids, TAG_REVERSE_TRANSITION_IDS)
+        );
+        crate::timed_mpi!(
+            MpiBsend,
+            destination.buffered_send_with_tag(
+                &self.reverse_transition_forced,
+                TAG_REVERSE_TRANSITION_FORCED,
+            )
         );
         self.n_solution_ack_remaining += 1;
     }
@@ -481,8 +495,14 @@ where
         let cost = message.cost;
         let mut tmp_transition_ids = vec![0; n];
         let mut tmp_transition_forced = vec![false; n];
-        source.receive_into_with_tag(&mut tmp_transition_ids, TAG_REVERSE_TRANSITION_IDS);
-        source.receive_into_with_tag(&mut tmp_transition_forced, TAG_REVERSE_TRANSITION_FORCED);
+        crate::timed_mpi!(
+            MpiRecv,
+            source.receive_into_with_tag(&mut tmp_transition_ids, TAG_REVERSE_TRANSITION_IDS)
+        );
+        crate::timed_mpi!(
+            MpiRecv,
+            source.receive_into_with_tag(&mut tmp_transition_forced, TAG_REVERSE_TRANSITION_FORCED)
+        );
 
         if !data_structure::exceed_bound(&self.model, cost, self.solution.cost) {
             self.solution.cost = Some(cost);
@@ -497,13 +517,19 @@ where
         }
 
         let buffer: [u8; 0] = [];
-        source.buffered_send_with_tag(&buffer, TAG_SOLUTION_ACK);
+        crate::timed_mpi!(
+            MpiBsend,
+            source.buffered_send_with_tag(&buffer, TAG_SOLUTION_ACK)
+        );
     }
 
     fn receive_solution_ack(&mut self, source_rank: Rank) {
         let source = self.communicator.process_at_rank(source_rank);
         let mut buffer: [u8; 0] = [];
-        source.receive_into_with_tag(&mut buffer, TAG_SOLUTION_ACK);
+        crate::timed_mpi!(
+            MpiRecv,
+            source.receive_into_with_tag(&mut buffer, TAG_SOLUTION_ACK)
+        );
         self.n_solution_ack_remaining -= 1;
     }
 
@@ -515,7 +541,10 @@ where
                 for destination_rank in 0..self.communicator.size() {
                     if destination_rank != self.communicator.rank() {
                         let destination = self.communicator.process_at_rank(destination_rank);
-                        destination.buffered_send_with_tag(&primal_bound, TAG_PRIMAL_BOUND);
+                        crate::timed_mpi!(
+                            MpiBsend,
+                            destination.buffered_send_with_tag(&primal_bound, TAG_PRIMAL_BOUND)
+                        );
                         self.n_primal_bound_ack_remaining += 1;
                     }
                 }
@@ -525,7 +554,10 @@ where
                 for destination_rank in 0..self.communicator.size() {
                     if destination_rank != self.communicator.rank() {
                         let destination = self.communicator.process_at_rank(destination_rank);
-                        destination.buffered_send_with_tag(&primal_bound, TAG_PRIMAL_BOUND);
+                        crate::timed_mpi!(
+                            MpiBsend,
+                            destination.buffered_send_with_tag(&primal_bound, TAG_PRIMAL_BOUND)
+                        );
                         self.n_primal_bound_ack_remaining += 1;
                     }
                 }
@@ -546,10 +578,16 @@ where
         let source = self.communicator.process_at_rank(source_rank);
 
         let primal_bound = if T::is_float() {
-            let (primal_bound, _) = source.receive_with_tag::<Continuous>(TAG_PRIMAL_BOUND);
+            let (primal_bound, _) = crate::timed_mpi!(
+                MpiRecv,
+                source.receive_with_tag::<Continuous>(TAG_PRIMAL_BOUND)
+            );
             T::from(primal_bound)
         } else {
-            let (primal_bound, _) = source.receive_with_tag::<Integer>(TAG_PRIMAL_BOUND);
+            let (primal_bound, _) = crate::timed_mpi!(
+                MpiRecv,
+                source.receive_with_tag::<Integer>(TAG_PRIMAL_BOUND)
+            );
             T::from(primal_bound)
         };
 
@@ -567,13 +605,19 @@ where
         }
 
         let buffer: [u8; 0] = [];
-        source.buffered_send_with_tag(&buffer, TAG_PRIMAL_BOUND_ACK);
+        crate::timed_mpi!(
+            MpiBsend,
+            source.buffered_send_with_tag(&buffer, TAG_PRIMAL_BOUND_ACK)
+        );
     }
 
     fn receive_primal_bound_ack(&mut self, source_rank: Rank) {
         let source = self.communicator.process_at_rank(source_rank);
         let mut buffer: [u8; 0] = [];
-        source.receive_into_with_tag(&mut buffer, TAG_PRIMAL_BOUND_ACK);
+        crate::timed_mpi!(
+            MpiRecv,
+            source.receive_into_with_tag(&mut buffer, TAG_PRIMAL_BOUND_ACK)
+        );
         self.n_primal_bound_ack_remaining -= 1;
     }
 
@@ -606,7 +650,10 @@ where
             self.is_retrieving_partial_solution = true;
             let buffer = [parent_id, self.partial_solution_timestamp];
             let destination_process = self.communicator.process_at_rank(parent_rank);
-            destination_process.buffered_send_with_tag(&buffer, TAG_PARTIAL_SOLUTION_REQUEST);
+            crate::timed_mpi!(
+                MpiBsend,
+                destination_process.buffered_send_with_tag(&buffer, TAG_PARTIAL_SOLUTION_REQUEST)
+            );
             self.n_partial_solution_remaining += 1;
         } else {
             let reverse_transition_ids = self.reverse_transition_ids.clone();
@@ -659,7 +706,10 @@ where
     ) {
         let mut buffer = [0usize; 2];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, TAG_PARTIAL_SOLUTION_REQUEST);
+        crate::timed_mpi!(
+            MpiRecv,
+            source_process.receive_into_with_tag(&mut buffer, TAG_PARTIAL_SOLUTION_REQUEST)
+        );
         let chain_id = buffer[0];
         let timestamp = buffer[1];
 
@@ -691,7 +741,11 @@ where
             if let Some((parent_rank, parent_id)) = parent {
                 let buffer = [parent_id, self.partial_solution_timestamp];
                 let destination_process = self.communicator.process_at_rank(parent_rank);
-                destination_process.buffered_send_with_tag(&buffer, TAG_PARTIAL_SOLUTION_REQUEST);
+                crate::timed_mpi!(
+                    MpiBsend,
+                    destination_process
+                        .buffered_send_with_tag(&buffer, TAG_PARTIAL_SOLUTION_REQUEST)
+                );
                 self.n_partial_solution_remaining += 1;
             } else {
                 self.is_retrieving_partial_solution = false;
@@ -791,16 +845,26 @@ where
 
                 let request = destination_rank == best_rank;
                 let destination_process = self.communicator.process_at_rank(destination_rank);
-                destination_process.send_with_tag(&request, TAG_FINAL_TRANSITION_IDS_REQUEST);
+                crate::timed_mpi!(
+                    MpiSend,
+                    destination_process.send_with_tag(&request, TAG_FINAL_TRANSITION_IDS_REQUEST)
+                );
             }
 
             if best_rank != this_rank {
                 let mut transition_ids = vec![0; n_best_transitions];
                 let mut transition_forced = vec![false; n_best_transitions];
                 let source_process = self.communicator.process_at_rank(best_rank);
-                source_process.receive_into_with_tag(&mut transition_ids, TAG_FINAL_TRANSITION_IDS);
-                source_process
-                    .receive_into_with_tag(&mut transition_forced, TAG_FINAL_TRANSITION_FORCED);
+                crate::timed_mpi!(
+                    MpiRecv,
+                    source_process
+                        .receive_into_with_tag(&mut transition_ids, TAG_FINAL_TRANSITION_IDS)
+                );
+                crate::timed_mpi!(
+                    MpiRecv,
+                    source_process
+                        .receive_into_with_tag(&mut transition_forced, TAG_FINAL_TRANSITION_FORCED)
+                );
                 self.solution.transitions.clear();
                 self.solution.transitions.extend(
                     transition_ids
@@ -855,7 +919,10 @@ where
             };
             information.send(&root, TAG_FINAL_SOLUTION_INFORMATION);
 
-            let (request, _) = root.receive_with_tag::<bool>(TAG_FINAL_TRANSITION_IDS_REQUEST);
+            let (request, _) = crate::timed_mpi!(
+                MpiRecv,
+                root.receive_with_tag::<bool>(TAG_FINAL_TRANSITION_IDS_REQUEST)
+            );
 
             if request {
                 let transition_ids = self
@@ -870,8 +937,14 @@ where
                     .iter()
                     .map(|t| t.forced)
                     .collect::<Vec<_>>();
-                root.send_with_tag(&transition_ids[..], TAG_FINAL_TRANSITION_IDS);
-                root.send_with_tag(&transition_forced[..], TAG_FINAL_TRANSITION_FORCED);
+                crate::timed_mpi!(
+                    MpiSend,
+                    root.send_with_tag(&transition_ids[..], TAG_FINAL_TRANSITION_IDS)
+                );
+                crate::timed_mpi!(
+                    MpiSend,
+                    root.send_with_tag(&transition_forced[..], TAG_FINAL_TRANSITION_FORCED)
+                );
             }
 
             let statistics = self
