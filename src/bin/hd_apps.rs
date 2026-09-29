@@ -1,3 +1,4 @@
+use didp_mpi::operation_timing::OperationTimingParameters;
 use didp_mpi::{
     AdditionalCommonParameters, HashType, HdApps, IsFloat, MpiAnytimeSearchParameters, NodeMessage,
     Statistics, TAG_EXPANSION_STATISTICS,
@@ -29,6 +30,7 @@ struct AppsParameters<T> {
     f_evaluator_type: FEvaluatorType,
     record_expansion_statistics: bool,
     record_width_statistics: bool,
+    operation_timing: OperationTimingParameters,
 }
 
 fn main_with_cost_type_and_hash_function<T, H>(
@@ -48,6 +50,8 @@ fn main_with_cost_type_and_hash_function<T, H>(
     let f_evaluator_type = apps_parameters.f_evaluator_type;
     let record_expansion_statistics = apps_parameters.record_expansion_statistics;
     let record_width_statistics = apps_parameters.record_width_statistics;
+    let operation_timing = apps_parameters.operation_timing;
+    operation_timing.validate();
 
     let (input, evaluators) = didp_mpi::make_input_and_mpi_dual_bound_evaluators(
         model,
@@ -90,6 +94,14 @@ fn main_with_cost_type_and_hash_function<T, H>(
         println!("Time for initialization: {}s", time_keeper.elapsed_time());
     }
 
+    #[cfg(feature = "operation-timing")]
+    if operation_timing.enabled() {
+        didp_mpi::communication_statistics::initialize(&communicator);
+        didp_mpi::operation_timing::start_search(
+            operation_timing.level,
+            operation_timing.sample_interval,
+        );
+    }
     let mut solver = HdApps::new(
         input,
         evaluators,
@@ -105,6 +117,15 @@ fn main_with_cost_type_and_hash_function<T, H>(
         solver.enable_width_statistics();
     }
     let (solution, statistics_list) = solver.search();
+
+    #[cfg(feature = "operation-timing")]
+    if operation_timing.enabled() {
+        didp_mpi::operation_timing::finish_and_dump(&communicator)
+            .expect("failed to write timing CSVs");
+        if communicator.rank() == 0 {
+            println!("Timings: timing.csv (all ranks and aggregate)");
+        }
+    }
 
     if let Some(statistics) = solver.width_statistics() {
         let filename = format!("width_statistics_rank_{}.csv", communicator.rank());
@@ -175,6 +196,7 @@ fn main_with_cost_type<T>(
         f_evaluator_type,
         record_expansion_statistics,
         record_width_statistics,
+        operation_timing: OperationTimingParameters::load_from_map(map),
     };
 
     match additional_parameters.hash_type {

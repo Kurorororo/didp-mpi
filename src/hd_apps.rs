@@ -1,5 +1,7 @@
 use didp_yaml::heuristic_search_solver::CostToDump;
 use dypdl::prelude::*;
+#[cfg(feature = "operation-timing")]
+use dypdl_heuristic_search::operation_timing::{Operation, Timer};
 use dypdl_heuristic_search::{
     search_algorithm::{
         data_structure::{self, HashableSignatureVariables, StateWithHashableSignatureVariables},
@@ -261,7 +263,10 @@ where
             if destination_rank != self.communicator.rank() {
                 let buffer: [u8; 0] = [];
                 let destination_process = self.communicator.process_at_rank(destination_rank);
-                destination_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT);
+                crate::timed_mpi!(
+                    MpiBsend,
+                    destination_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT)
+                );
                 self.n_remaining_time_out_ack += 1;
             }
         }
@@ -270,16 +275,25 @@ where
     fn receive_time_out(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT);
+        crate::timed_mpi!(
+            MpiRecv,
+            source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT)
+        );
         self.is_time_out = true;
         self.local_dual_bound = self.compute_local_dual_bound();
-        source_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT_ACK);
+        crate::timed_mpi!(
+            MpiBsend,
+            source_process.buffered_send_with_tag(&buffer, TAG_TIME_OUT_ACK)
+        );
     }
 
     fn receive_time_out_ack(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT_ACK);
+        crate::timed_mpi!(
+            MpiRecv,
+            source_process.receive_into_with_tag(&mut buffer, TAG_TIME_OUT_ACK)
+        );
         self.n_remaining_time_out_ack -= 1;
     }
 
@@ -288,7 +302,10 @@ where
             if destination_rank != self.communicator.rank() {
                 let buffer: [u8; 0] = [];
                 let destination_process = self.communicator.process_at_rank(destination_rank);
-                destination_process.buffered_send_with_tag(&buffer, TAG_TERMINATE);
+                crate::timed_mpi!(
+                    MpiBsend,
+                    destination_process.buffered_send_with_tag(&buffer, TAG_TERMINATE)
+                );
             }
         }
 
@@ -298,7 +315,10 @@ where
     fn receive_terminate(&mut self, source_rank: Rank) {
         let mut buffer: [u8; 0] = [];
         let source_process = self.communicator.process_at_rank(source_rank);
-        source_process.receive_into_with_tag(&mut buffer, TAG_TERMINATE);
+        crate::timed_mpi!(
+            MpiRecv,
+            source_process.receive_into_with_tag(&mut buffer, TAG_TERMINATE)
+        );
         self.is_terminated = true;
     }
 
@@ -328,9 +348,13 @@ where
     }
 
     fn process_message(&mut self) {
+        #[cfg(feature = "operation-timing")]
+        let _timer = Timer::start(Operation::PhaseMessages, 1);
         let any_process = self.communicator.any_process();
 
-        while let Some(status) = any_process.immediate_probe() {
+        while let Some(status) = crate::timed_mpi_probe!(any_process.immediate_probe()) {
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(Operation::MessageDispatch, 1);
             let source_rank = status.source_rank();
             let tag = status.tag();
 
@@ -364,6 +388,8 @@ where
     }
 
     pub fn search(&mut self) -> (Solution<T, TransitionWithId<V>>, Vec<Statistics>) {
+        #[cfg(feature = "operation-timing")]
+        let _search_timer = Timer::start(Operation::SearchTotal, 1);
         let mut goal_found = false;
         let mut keep_buffer = vec![];
         let mut send_buffer = vec![];
@@ -548,8 +574,14 @@ where
         }
 
         self.record_width_statistics(WidthEvent::Finish, self.width, last_expanded_depth);
-        self.communicator.barrier();
+        {
+            #[cfg(feature = "operation-timing")]
+            let _timer = Timer::start(Operation::PhaseBarrier, 1);
+            crate::timed_mpi!(MpiBarrier, self.communicator.barrier());
+        }
 
+        #[cfg(feature = "operation-timing")]
+        let _finalize_timer = Timer::start(Operation::PhaseFinalize, 1);
         let (mut solution, statistics) = self.search.finalize(self.local_dual_bound);
 
         if self.is_time_out {

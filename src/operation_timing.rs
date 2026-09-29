@@ -1,4 +1,4 @@
-//! HAC operation timing configuration and MPI CSV reporting.
+//! Operation timing configuration and MPI CSV reporting.
 
 use linked_hash_map::LinkedHashMap;
 use yaml_rust::Yaml;
